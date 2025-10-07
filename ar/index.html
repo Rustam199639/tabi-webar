@@ -68,10 +68,12 @@
     vr-mode-ui="enabled:false"
     renderer="colorManagement:true; physicallyCorrectLights:true; logarithmicDepthBuffer:true"
     embedded
-    arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false"
+    arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false; facingMode: environment"
   >
     <a-entity light="type: ambient; intensity: 1"></a-entity>
-    <a-camera gps-camera rotation-reader></a-camera>
+
+    <!-- IMPORTANT: use projected camera to match projected entities -->
+    <a-camera gps-projected-camera rotation-reader></a-camera>
 
     <a-entity id="layer-arrows"></a-entity>
     <a-entity id="layer-arrival"></a-entity>
@@ -92,8 +94,8 @@
     const hud = document.getElementById('hud');
     const arrowsLayer = document.getElementById('layer-arrows');
     const arrivalLayer = document.getElementById('layer-arrival');
-    const cameraEl = document.querySelector('[gps-camera]');
-    const useProjected = !!(AFRAME?.components?.['gps-projected-entity-place']);
+    const cameraEl = document.querySelector('[gps-projected-camera]');
+    const useProjected = true; // we intentionally use the projected pair
 
     const log=(...a)=>{try{console.log(...a)}catch{}};
     const warn=(...a)=>{try{console.warn(...a)}catch{}};
@@ -113,8 +115,7 @@
     function clear(el){ if (!el) return; while(el.firstChild) el.removeChild(el.firstChild); }
     function disableCulling(root){ try{ root.object3D.traverse(o=>{ o.frustumCulled = false; }); }catch{} }
     function placeAtLatLng(node, lat, lng){
-      if (useProjected) node.setAttribute('gps-projected-entity-place', `latitude: ${lat}; longitude: ${lng}`);
-      else node.setAttribute('gps-entity-place', `latitude: ${lat}; longitude: ${lng}`);
+      node.setAttribute('gps-projected-entity-place', `latitude: ${lat}; longitude: ${lng}`);
     }
 
     // Big scale so arrows are obvious
@@ -155,22 +156,16 @@
       s.setAttribute('position','0 10 0');
       s.setAttribute('material',`shader: flat; color:${color}; opacity:0.6; transparent:true; depthTest:false; side:double; emissive:${color}; emissiveIntensity:1.0`);
       // Billboarding helps spot the marker head-on if you want (optional):
-      s.setAttribute('look-at', '[gps-camera]');
+      s.setAttribute('look-at', '[gps-projected-camera]');
       disableCulling(s);
       return s;
     }
 
     // State
-    let anchors = []; let activeIndex = 0; let arrived = false;
-    let gpsReady = false;
-
-    // Fire when AR.js has initial origin for gps-camera
-    cameraEl?.addEventListener('gps-camera-origin-coord', e => {
-      gpsReady = true;
-      log('[AR] gps origin', e.detail);
-      if (!anchors.length) hud.textContent = 'GPS ready. Waiting for anchors…';
-      renderArrows();
-    });
+    let anchors = [];       // [{lat,lng,yaw}]
+    let activeIndex = 0;
+    let arrived = false;
+    let here = null;        // {lat,lng} from watchPosition
 
     function updateHUD(dist){
       if (!anchors.length){ hud.textContent='Waiting for anchors…'; return; }
@@ -182,20 +177,12 @@
     }
 
     function renderArrows(){
-      if (!gpsReady) { log('[AR] defer render — GPS origin not ready'); return; }
       clear(arrivalLayer); clear(arrowsLayer);
       if (!anchors.length || arrived) return;
 
       const toShow = [activeIndex, activeIndex+1].filter(i => i < anchors.length);
       log('[AR] render arrows', toShow.length, 'active', activeIndex);
       send({ type:'arrows_rendered', count: toShow.length, active: activeIndex });
-
-      let here = null;
-      try{
-        const gps = cameraEl?.components?.['gps-camera'];
-        const c = gps && (gps.currentCoords || gps.lastPosition || gps.prevCoords);
-        if (c) here = { lat:c.latitude, lng:c.longitude };
-      }catch{}
 
       toShow.forEach((idx,i) => {
         const a = anchors[idx];
@@ -251,48 +238,65 @@
     document.addEventListener('message', onMsg);
     window.addEventListener('message', onMsg);
 
+    // Keep our own live position for HUD + advancing logic
+    let watchId = null;
+    function startWatch(){
+      if (watchId !== null) return;
+      try{
+        watchId = navigator.geolocation.watchPosition(
+          pos => {
+            here = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            send({ type:'geo_ok', lat: here.lat, lng: here.lng });
+
+            if (anchors.length && !arrived) {
+              const target = anchors[activeIndex];
+              const dist = dMeters(here, target);
+              updateHUD(dist);
+
+              // keep shown groups large and visible + re-scale with distance
+              try {
+                const groups = arrowsLayer.children || [];
+                for (let i=0;i<groups.length;i++){
+                  const group = groups[i];
+                  group.setAttribute('scale', scaleFor(dist));
+                  disableCulling(group);
+                }
+              } catch {}
+
+              if (activeIndex < anchors.length-1 && dist <= 8){
+                activeIndex += 1; renderArrows(); updateHUD(dMeters(here, anchors[activeIndex]));
+                log('[AR] advance to', activeIndex); send({ type:'advance', idx: activeIndex });
+              } else if (activeIndex === anchors.length-1 && dist <= 25 && !arrived){
+                showArrival();
+              }
+            }
+          },
+          err => {
+            warn('[AR] watchPosition error', err?.code, err?.message);
+            send({ type:'geo_error', code:err?.code, message:err?.message });
+          },
+          { enableHighAccuracy:true, timeout:10000, maximumAge:1000, distanceFilter:1 }
+        );
+      }catch(e){ warn('[AR] watchPosition failed', e); }
+    }
+
     window.addEventListener('load', function(){
       log('[AR] window load'); send({ type:'ready' });
+      // Kick a one-shot (helps prompt permission UI on some devices)
       try{
         navigator.geolocation.getCurrentPosition(
-          p => { log('[AR] getCurrentPosition ok', p?.coords?.latitude, p?.coords?.longitude); send({ type:'geo_ok', lat:p?.coords?.latitude, lng:p?.coords?.longitude }); },
-          e => { warn('[AR] getCurrentPosition error', e?.code, e?.message); send({ type:'geo_error', code:e?.code, message:e?.message }); },
+          p => { log('[AR] getCurrentPosition ok', p?.coords?.latitude, p?.coords?.longitude); },
+          e => { warn('[AR] getCurrentPosition error', e?.code, e?.message); },
           { enableHighAccuracy:true, timeout:10000, maximumAge:1000 }
         );
       }catch(e){ warn('[AR] geolocation call failed', e); }
+      startWatch();
     });
 
-    // Main loop
-    setInterval(function(){
-      if(!anchors.length || !gpsReady || arrived) return;
-
-      const gps = cameraEl?.components?.['gps-camera'];
-      const c = gps && (gps.currentCoords || gps.lastPosition || gps.prevCoords);
-      if(!c){ updateHUD(undefined); return; }
-
-      const here = { lat:c.latitude, lng:c.longitude };
-      const target = anchors[activeIndex]; if (!target) return;
-
-      const dist = dMeters(here, target);
-      updateHUD(dist);
-
-      // keep shown groups large and visible
-      try {
-        const groups = arrowsLayer.children || [];
-        for (let i=0;i<groups.length;i++){
-          const group = groups[i];
-          group.setAttribute('scale', scaleFor(dist));
-          disableCulling(group);
-        }
-      } catch {}
-
-      if (activeIndex < anchors.length-1 && dist <= 8){
-        activeIndex += 1; renderArrows(); updateHUD(dMeters(here, anchors[activeIndex]));
-        log('[AR] advance to', activeIndex); send({ type:'advance', idx: activeIndex });
-      } else if (activeIndex === anchors.length-1 && dist <= 25 && !arrived){
-        showArrival();
-      }
-    }, 1000);
+    // (Optional) If AR.js exposes origin event, re-render when it’s ready
+    ['gps-camera-origin-coord','gps-projected-camera-origin-coord','gps-camera-update-position'].forEach(evt=>{
+      cameraEl && cameraEl.addEventListener(evt, () => { log('[AR] camera event:', evt); renderArrows(); });
+    });
   })();
   </script>
 </body>
