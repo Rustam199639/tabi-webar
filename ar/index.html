@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
-<title>TABI AR — Big Bright Arrows Everywhere</title>
+<title>TABI AR — Turn-by-Turn</title>
 
 <!-- A-Frame -->
 <script src="https://aframe.io/releases/1.4.2/aframe.min.js" crossorigin="anonymous"></script>
@@ -18,8 +18,8 @@
         var T = window.THREE;
         if(!T.Math) T.Math = {};
         var MU = T.MathUtils || A.THREE.MathUtils;
-        T.Math.degToRad = T.Math.degToRad || ((d)=>d*Math.PI/180);
-        T.Math.radToDeg = T.Math.radToDeg || ((r)=>r*180/Math.PI);
+        T.Math.degToRad = T.Math.degToRad || (d=>d*Math.PI/180);
+        T.Math.radToDeg = T.Math.radToDeg || (r=>r*180/Math.PI);
         T.Math.clamp    = T.Math.clamp    || ((x,a,b)=>Math.min(Math.max(x,a),b));
         if(!T.PlaneBufferGeometry && T.PlaneGeometry) T.PlaneBufferGeometry = T.PlaneGeometry;
         console.log('[OK] [BOOT] THREE shim applied', {hasMath:!!T.Math, hasUtils:!!MU});
@@ -46,7 +46,6 @@
 
 <style>
   html,body{margin:0;padding:0;overflow:hidden;background:#000;}
-  /* Keep canvas above native layers */
   a-scene, .a-canvas, canvas{
     position:fixed!important; inset:0!important;
     width:100vw!important; height:100vh!important;
@@ -57,92 +56,128 @@
     padding:8px 10px; background:rgba(0,0,0,.7); color:#fff;
     border-radius:12px; font:13px/18px system-ui; white-space:pre-line;
   }
+
+  /* Bottom nav panel */
+  .nav{
+    position:fixed; left:10px; right:10px; bottom:10px; z-index:2147483647;
+    background:rgba(0,0,0,.66); color:#fff; border-radius:14px; padding:10px;
+    font:13px/18px system-ui; backdrop-filter:saturate(120%) blur(6px);
+  }
+  .nav-top{ display:flex; gap:8px; margin-bottom:8px; }
+  .btn{
+    appearance:none; border:0; padding:8px 10px; border-radius:10px;
+    background:#2a2a2a; color:#fff; font-weight:600;
+  }
+  .btn-primary{ background:#1a73e8; }
+  .nav-main{ display:flex; align-items:center; gap:12px; }
+  .dial{ width:64px; height:64px; border-radius:50%; background:#111; display:grid; place-items:center; }
+  #navArrow{ width:52px; height:52px; transform-origin:50% 50%; }
+  #navArrow polygon{ fill:#1a73e8; }
+  .stats{ display:flex; flex-direction:column; gap:2px; }
+  .stats .big{ font-weight:800; font-size:20px; line-height:22px; }
+  .stats .small{ opacity:.8; }
 </style>
 </head>
 <body>
 <div id="hud" class="hud">Loading…</div>
 
+<!-- Bottom nav -->
+<div id="nav" class="nav">
+  <div class="nav-top">
+    <button id="btnMaps" class="btn">Google Maps</button>
+    <button id="btnCal" class="btn btn-primary">Calibrate</button>
+  </div>
+  <div class="nav-main">
+    <div class="dial">
+      <svg id="navArrow" viewBox="0 0 100 100" aria-label="direction arrow">
+        <polygon points="50,8 68,60 58,60 58,92 42,92 42,60 32,60"/>
+      </svg>
+    </div>
+    <div class="stats">
+      <div id="navDist" class="big">— m</div>
+      <div id="navText" class="small">Point the arrow to walk</div>
+    </div>
+  </div>
+</div>
+
 <a-scene
   vr-mode-ui="enabled:false"
-  renderer="alpha:false; antialias:true; sortObjects:true; physicallyCorrectLights:false; preserveDrawingBuffer:true"
+  renderer="alpha:false; antialias:true; sortObjects:true; physicallyCorrectLights:false"
   embedded
   arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false"
 >
-  <!-- NON-projected GPS components: most broadly compatible -->
   <a-camera gps-camera rotation-reader camera="near:0.01; far:200000"></a-camera>
 
-  <a-entity id="layer-arrows"></a-entity>
-  <a-entity id="layer-arrival"></a-entity>
-
-  <!-- local sanity markers so you always see *something* -->
-  <a-plane position="0 1.5 -2" rotation="-10 0 0" width="2.6" height="1.2"
-           material="shader:flat; color:#ff00ff; opacity:0.95; transparent:true"
-           always-on-top></a-plane>
-  <a-ring position="0 0 -3" rotation="-90 0 0" radius-inner="0.45" radius-outer="0.7"
-          material="shader:flat; color:#ffffff; opacity:0.95; transparent:true"
-          always-on-top></a-ring>
+  <!-- Wrap everything we place so we can rotate the whole world for calibration -->
+  <a-entity id="world-root">
+    <a-entity id="layer-arrows"></a-entity>
+    <a-entity id="layer-arrival"></a-entity>
+  </a-entity>
 </a-scene>
 
 <script>
 (function(){
   // ======= CONFIG =======
   const CONFIG = {
-    arrowsEnabled: true,
-    // Show ONLY one arrow: the closest anchor within this radius
-    onlyClosestWithinM: 50,     // ← 50 m visibility window
-    useActiveIndex: false,      // true = show only the "next" (activeIndex) if within 50 m
-    maxRenderDistanceM: 500,    // keep for safety, not used much now
-    hideARVideo: true,
-
-    // look & feel
-    arrowColor: '#2aa8ff',
-    arrowOpacity: 0.95
+    arrowsEnabled: true,        // master switch
+    maxVisibleDistM: 50,        // show the next arrow only if within 50 m
+    minArriveStepM: 8,          // move to next anchor when you're within 8 m
+    arrivalShowM: 25,           // show arrival ring when within 25 m of final anchor
+    hideARVideo: true
   };
 
-
-  // ======= Helpers =======
+  // ======= DOM refs =======
   const hud = document.getElementById('hud');
   const arrowsLayer = document.getElementById('layer-arrows');
   const arrivalLayer = document.getElementById('layer-arrival');
+  const worldRoot = document.getElementById('world-root');
+  const navDistEl   = document.getElementById('navDist');
+  const navTextEl   = document.getElementById('navText');
+  const navArrowSVG = document.getElementById('navArrow');
 
+  // ======= Math helpers =======
   const toRad = d => d*Math.PI/180;
+  const toDeg = r => r*180/Math.PI;
+  const wrapDeg = d => ((d%360)+360)%360;
+
   function dMeters(a,b){
     const R=6371000, dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng), la1=toRad(a.lat), la2=toRad(b.lat);
     const h=Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLng/2)**2;
     return 2*R*Math.atan2(Math.sqrt(h), Math.sqrt(1-h));
   }
+  function bearingTo(a,b){
+    const φ1=toRad(a.lat), φ2=toRad(b.lat), Δλ=toRad(b.lng-a.lng);
+    const y = Math.sin(Δλ)*Math.cos(φ2);
+    const x = Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+    return wrapDeg(toDeg(Math.atan2(y,x))); // 0..360 (0=N)
+  }
   function clear(el){ while(el.firstChild) el.removeChild(el.firstChild); }
   function placeAtLatLng(node, lat, lng){ node.setAttribute('gps-entity-place',`latitude:${lat}; longitude:${lng}`); }
 
+  // ======= Arrow factory (SMALL + flat shaded) =======
   function makeArrow(yawDeg, scaleVal){
     const wrap=document.createElement('a-entity');
     wrap.setAttribute('rotation',`0 ${yawDeg||0} 0`);
-    wrap.setAttribute('position','0 1.2 0');           // low in view
+    wrap.setAttribute('position','0 0 0');
     wrap.setAttribute('scale', `${scaleVal} ${scaleVal} ${scaleVal}`);
     wrap.setAttribute('always-on-top','');
 
-    // ~40 cm tall arrow before scaling
+    // Small geometry: ~1.35 m tall at scale=1
     const shaft=document.createElement('a-cylinder');
-    shaft.setAttribute('height','0.28');               // 28 cm
-    shaft.setAttribute('radius','0.02');               // 2 cm
-    shaft.setAttribute('position','0 0.16 0');
-    shaft.setAttribute('material',`shader:flat; color:${CONFIG.arrowColor}; opacity:${CONFIG.arrowOpacity}; transparent:true`);
+    shaft.setAttribute('height','0.9'); shaft.setAttribute('radius','0.06'); shaft.setAttribute('position','0 0.55 0');
+    shaft.setAttribute('material','shader:flat; color:#00bcd4; opacity:0.95; transparent:true');
 
     const head=document.createElement('a-cone');
-    head.setAttribute('height','0.14');                // 14 cm
-    head.setAttribute('radius-bottom','0.07');         // 7 cm
-    head.setAttribute('radius-top','0.003');
-    head.setAttribute('position','0 0.33 0');
-    head.setAttribute('material',`shader:flat; color:${CONFIG.arrowColor}; opacity:${CONFIG.arrowOpacity}; transparent:true`);
+    head.setAttribute('height','0.45'); head.setAttribute('radius-bottom','0.18'); head.setAttribute('radius-top','0.01'); head.setAttribute('position','0 1.1 0');
+    head.setAttribute('material','shader:flat; color:#00bcd4; opacity:0.95; transparent:true');
 
     wrap.appendChild(shaft); wrap.appendChild(head);
     return wrap;
   }
 
-
-
   // ======= State =======
   let anchors=[]; let activeIndex=0; let arrived=false; let here=null; let originReady=false;
+  let worldBiasDeg = 0; // calibration rotation we apply to world-root
 
   // ======= HUD =======
   function updateHUD(dist){
@@ -155,53 +190,101 @@
     console.log('[INFO] HUD', {activeIndex, dist:dt});
   }
 
+  // Scale rule: bigger when closer (0..50 m -> 1.4..0.6)
   function scaleForDistance(distM){
-    if (typeof CONFIG.fixedScale === 'number') return CONFIG.fixedScale; // respect fixed size
-    const min=0.7, max=1.6, span=80;          // gentle growth with distance
-    const d = Math.max(0, Math.min(span, distM||0));
-    return min + (max-min)*(d/span);
+    if (distM == null) return 1.0;
+    const d = Math.max(0, Math.min(50, distM));
+    const sClose=1.4, sFar=0.6;
+    const s = sFar + (sClose - sFar) * (1 - d/50);
+    return s;
   }
 
+  // ======= Heading & calibration =======
+  const camEl = document.querySelector('[gps-camera]');
+
+  function getHeadingDeg(){
+    try{
+      const comp = camEl?.components?.['gps-camera'];
+      if (comp && typeof comp.heading === 'number' && !Number.isNaN(comp.heading)) {
+        return wrapDeg(comp.heading); // 0..360, 0=N
+      }
+    }catch{}
+    const y = camEl?.object3D?.rotation?.y || 0; // fallback
+    return wrapDeg(-toDeg(y));
+  }
+  function applyWorldBias(){ worldRoot?.setAttribute('rotation', `0 ${worldBiasDeg} 0`); }
+  function calibrateToTarget(){
+    if (!here || !anchors.length) return;
+    const target = anchors[activeIndex] || anchors[0];
+    const brg = bearingTo(here, target);
+    const hdg = getHeadingDeg();
+    const delta = brg - hdg;
+    worldBiasDeg = wrapDeg(worldBiasDeg - delta);
+    applyWorldBias();
+    updateNavUI();
+  }
+  function openGoogleMaps(){
+    if (!anchors.length) return;
+    const t = anchors[activeIndex] || anchors[0];
+    const url = `https://www.google.com/maps/dir/?api=1&destination=${t.lat},${t.lng}&travelmode=walking`;
+    window.location.href = url;
+  }
+  document.getElementById('btnCal').addEventListener('click', calibrateToTarget);
+  document.getElementById('btnMaps').addEventListener('click', openGoogleMaps);
+
+  // Bottom panel arrow (UI) – rotate to show turn direction
+  function updateNavUI(){
+    let distStr = '—';
+    let turn = 0;
+
+    if (here && anchors.length){
+      const target = anchors[activeIndex] || anchors[0];
+      const dist = dMeters(here, target);
+      distStr = `${Math.round(dist)} m`;
+
+      const brg = bearingTo(here, target);
+      const hdg = getHeadingDeg();
+      turn = wrapDeg(brg - hdg - worldBiasDeg);
+    }
+
+    navDistEl.textContent = distStr;
+    navArrowSVG.style.transform = `rotate(${turn}deg)`;
+    navTextEl.textContent = (turn>=350 || turn<=10) ? 'Go straight' :
+                            (turn<180 ? `Turn right ${Math.round(turn)}°` :
+                                        `Turn left ${Math.round(360-turn)}°`);
+  }
 
   // ======= Render =======
   function renderArrows(){
-  console.log('[INFO] RENDER begin', {activeIndex, total:anchors.length, originReady});
-  clear(arrivalLayer); clear(arrowsLayer);
-  if (!CONFIG.arrowsEnabled) return;
-  if (!anchors.length || arrived) return;
+    console.log('[INFO] RENDER begin', {activeIndex, total:anchors.length, originReady});
+    clear(arrivalLayer); clear(arrowsLayer);
+    if(!anchors.length || arrived || !CONFIG.arrowsEnabled) return;
 
-  // Need current location to decide visibility
-  if (!here){ console.log('[INFO] no GPS yet — nothing to render'); return; }
+    // We show ONLY the next anchor, and ONLY if it's within 50 m
+    const target = anchors[activeIndex];
+    if (!target) return;
 
-  // Build candidate list with distances
-  const withDist = anchors.map((a,i)=>({ i, a, dist: dMeters(here, a) }));
-
-  // Keep only anchors within the 50 m window
-  let candidates = withDist.filter(o => o.dist <= CONFIG.onlyClosestWithinM);
-
-  // Option: show only the "next" waypoint if it's within 50 m
-  if (CONFIG.useActiveIndex){
-    const pick = withDist[activeIndex];
-    candidates = (pick && pick.dist <= CONFIG.onlyClosestWithinM) ? [pick] : [];
-  }else{
-    // Otherwise, pick the nearest within 50 m
-    if (candidates.length){
-      candidates.sort((x,y)=>x.dist-y.dist);
-      candidates = [candidates[0]];
+    let dist = null;
+    if (here) dist = dMeters(here, target);
+    if (dist !== null && dist > CONFIG.maxVisibleDistM) {
+      console.log('[INFO] Arrow hidden (too far)', {dist});
+      return; // nothing rendered when > 50 m away
     }
+
+    const n = document.createElement('a-entity');
+    placeAtLatLng(n, target.lat, target.lng);
+
+    // Orientation: point from your position toward the target (fallback to path forward)
+    let yawDeg = 0;
+    if (here) yawDeg = bearingTo(here, target);
+    else if (activeIndex < anchors.length-1) yawDeg = bearingTo(target, anchors[activeIndex+1]);
+
+    const sc = scaleForDistance(dist);
+    n.appendChild(makeArrow(yawDeg, sc));
+    arrowsLayer.appendChild(n);
+
+    console.log('[INFO] RENDER end', {children:arrowsLayer.children.length});
   }
-
-  console.log('[INFO] RENDER will show', {count:candidates.length, indices:candidates.map(c=>c.i)});
-  candidates.forEach(({i,a,dist})=>{
-    const node = document.createElement('a-entity');
-    placeAtLatLng(node, a.lat, a.lng);
-    node.appendChild(makeArrow(a.yaw, scaleForDistance(dist)));
-    arrowsLayer.appendChild(node);
-  });
-
-  console.log('[INFO] RENDER end', {children:arrowsLayer.children.length});
-}
-
 
   function showArrival(){
     arrived=true; clear(arrowsLayer); clear(arrivalLayer);
@@ -218,13 +301,12 @@
     anchors = Array.isArray(data)? data : [];
     activeIndex=0; arrived=false;
     console.log('[INFO] ANCHORS received', {count:anchors.length, first:anchors[0], last:anchors[anchors.length-1]});
-    renderArrows(); updateHUD(undefined);
+    renderArrows(); updateHUD(undefined); updateNavUI();
   }
   function onMsg(ev){ try{ const p=JSON.parse(ev.data); if(p?.type==='anchors') setAnchors(p.data); }catch{} }
   document.addEventListener('message', onMsg); window.addEventListener('message', onMsg);
 
   // ======= GPS & origin =======
-  const camEl = document.querySelector('[gps-camera]');
   camEl?.addEventListener('gps-camera-origin-coord', e => { originReady=true; console.log('[INFO] origin ready', e.detail); });
 
   function startGPS(){
@@ -241,12 +323,18 @@
           const target=anchors[activeIndex];
           const dist=dMeters(here,target);
           updateHUD(dist);
-          if (activeIndex < anchors.length-1 && dist <= 8){
+
+          // Step forward when close; finish at the end
+          if (activeIndex < anchors.length-1 && dist <= CONFIG.minArriveStepM){
             activeIndex+=1; renderArrows(); updateHUD(dMeters(here, anchors[activeIndex]));
-          } else if (activeIndex===anchors.length-1 && dist<=25 && !arrived){
+          } else if (activeIndex===anchors.length-1 && dist<=CONFIG.arrivalShowM && !arrived){
             showArrival();
+          } else {
+            // distance changed; rescale arrow if visible
+            renderArrows();
           }
         }
+        updateNavUI();
       }, err=>console.warn('[WARN] watchPosition failed', err),
       {enableHighAccuracy:true, timeout:10000, maximumAge:1000, distanceFilter:1});
     }catch(e){ console.warn('[WARN] GPS start failed', e); }
@@ -274,6 +362,7 @@
   window.addEventListener('load', ()=>{
     console.log('[INFO] window load');
     startGPS();
+    setInterval(updateNavUI, 250); // smooth heading updates
   });
 })();
 </script>
