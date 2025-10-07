@@ -15,29 +15,20 @@
         try{
           var A = window.AFRAME;
           if (!A || !A.THREE) return false;
-
-          // AR.js reads from window.THREE → bind it to A-Frame’s THREE
-          if (!window.THREE) window.THREE = A.THREE;
+          if (!window.THREE) window.THREE = A.THREE;       // AR.js reads from window.THREE
 
           var T = window.THREE;
           if (!T.Math) T.Math = {};
-
           var MU = T.MathUtils || (A.THREE && A.THREE.MathUtils);
           if (!T.Math.degToRad) T.Math.degToRad = MU && MU.degToRad ? MU.degToRad : function(d){ return d * Math.PI / 180; };
           if (!T.Math.radToDeg) T.Math.radToDeg = MU && MU.radToDeg ? MU.radToDeg : function(r){ return r * 180 / Math.PI; };
           if (!T.Math.clamp)    T.Math.clamp    = MU && MU.clamp    ? MU.clamp    : function(x,min,max){ return Math.min(Math.max(x,min),max); };
-
-          // Quiet older AR.js geometry alias
-          if (!T.PlaneBufferGeometry && T.PlaneGeometry) {
-            T.PlaneBufferGeometry = T.PlaneGeometry;
-          }
+          if (!T.PlaneBufferGeometry && T.PlaneGeometry) T.PlaneBufferGeometry = T.PlaneGeometry; // quiet alias
           return true;
         }catch(e){ return false; }
       }
       if (!apply()){
-        var tries = 0, id = setInterval(function(){
-          if (apply() || ++tries > 80) clearInterval(id);
-        }, 50);
+        var tries = 0, id = setInterval(function(){ if (apply() || ++tries > 80) clearInterval(id); }, 50);
         document.addEventListener('DOMContentLoaded', apply, { once: true });
       }
     })();
@@ -46,7 +37,7 @@
   <!-- AR.js (A-Frame build) -->
   <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.4/aframe/build/aframe-ar.js" crossorigin="anonymous"></script>
 
-  <!-- Billboard helper (optional for labels etc.) -->
+  <!-- Optional billboard helper -->
   <script src="https://unpkg.com/aframe-look-at-component@0.8.0/dist/aframe-look-at-component.min.js" crossorigin="anonymous"></script>
 
   <!-- No-op rotation-reader to avoid missing component errors -->
@@ -58,7 +49,12 @@
 
   <style>
     html,body{margin:0;padding:0;overflow:hidden;background:#000;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
-    .hud{position:fixed;top:8px;left:8px;right:8px;padding:8px 10px;background:rgba(0,0,0,.55);color:#fff;font-size:13px;line-height:18px;border-radius:12px;white-space:pre-line}
+    .hud{
+      position:fixed;top:8px;left:8px;right:8px;
+      padding:8px 10px;background:rgba(0,0,0,.65);color:#fff;
+      font-size:13px;line-height:18px;border-radius:12px;white-space:pre-line;
+      z-index:9999; pointer-events:none;
+    }
   </style>
 </head>
 <body>
@@ -68,20 +64,26 @@
     vr-mode-ui="enabled:false"
     renderer="colorManagement:true; physicallyCorrectLights:true; logarithmicDepthBuffer:true"
     embedded
-    arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false; facingMode: environment"
+    arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false"
   >
-    <a-entity light="type: ambient; intensity: 1"></a-entity>
+    <!-- Lighting so STANDARD materials look bright -->
+    <a-entity light="type: ambient; intensity: 1.2"></a-entity>
+    <a-entity light="type: directional; intensity: 0.8" position="0 2 1"></a-entity>
 
-    <!-- IMPORTANT: use projected camera to match projected entities -->
-    <a-camera gps-projected-camera rotation-reader></a-camera>
+    <!-- Use projected camera to match projected entities; extend far plane so distant anchors show -->
+    <a-camera gps-projected-camera rotation-reader camera="near:0.01; far:200000"></a-camera>
 
     <a-entity id="layer-arrows"></a-entity>
     <a-entity id="layer-arrival"></a-entity>
 
+    <!-- Local debug: should always be visible 2m ahead -->
+    <a-box position="0 1.6 -2" depth="0.3" height="0.3" width="0.3"
+           material="shader:standard; color:#4ADE80; metalness:0; roughness:0.4; opacity:0.9; transparent:true"></a-box>
+
     <!-- Debug: big white ring 3 m straight ahead (confirms 3D pipeline) -->
     <a-ring id="debug-forward" position="0 0 -3" rotation="-90 0 0"
             radius-inner="0.4" radius-outer="0.55"
-            material="shader:flat; color:#ffffff; opacity:0.95; transparent:true; depthTest:false"></a-ring>
+            material="shader:standard; color:#ffffff; metalness:0; roughness:0.5; opacity:0.95; transparent:true"></a-ring>
   </a-scene>
 
   <script>
@@ -95,7 +97,7 @@
     const arrowsLayer = document.getElementById('layer-arrows');
     const arrivalLayer = document.getElementById('layer-arrival');
     const cameraEl = document.querySelector('[gps-projected-camera]');
-    const useProjected = true; // we intentionally use the projected pair
+    const useProjected = true;
 
     const log=(...a)=>{try{console.log(...a)}catch{}};
     const warn=(...a)=>{try{console.warn(...a)}catch{}};
@@ -124,25 +126,25 @@
       return `${s} ${s} ${s}`;
     }
 
-    // Directional arrow — keep yaw (do NOT face the camera)
+    // Directional arrow — STANDARD material (no warnings), bright and visible
     function makeArrow(yawDeg, approxDistance){
       const wrap = document.createElement('a-entity');
       wrap.setAttribute('rotation', `0 ${yawDeg} 0`);
-      wrap.setAttribute('position', '0 10 0');
+      wrap.setAttribute('position', '0 10 0'); // ~10m above ground for visibility
       wrap.setAttribute('scale', scaleFor(approxDistance || 20));
 
       const shaft = document.createElement('a-cylinder');
       shaft.setAttribute('height','6.0');
       shaft.setAttribute('radius','0.25');
       shaft.setAttribute('position','0 3 0');
-      shaft.setAttribute('material','shader: flat; color: #00E0FF; opacity:0.99; transparent:true; depthTest:false; side:double; emissive:#00E0FF; emissiveIntensity:1.5');
+      shaft.setAttribute('material','shader:standard; color:#00E0FF; metalness:0; roughness:0.4; opacity:0.98; transparent:true; emissive:#00E0FF; emissiveIntensity:0.35');
 
       const head = document.createElement('a-cone');
       head.setAttribute('height','2.2');
       head.setAttribute('radius-bottom','0.7');
       head.setAttribute('radius-top','0.01');
       head.setAttribute('position','0 5.3 0');
-      head.setAttribute('material','shader: flat; color: #00E0FF; opacity:0.99; transparent:true; depthTest:false; side:double; emissive:#00E0FF; emissiveIntensity:1.6');
+      head.setAttribute('material','shader:standard; color:#00E0FF; metalness:0; roughness:0.35; opacity:0.98; transparent:true; emissive:#00E0FF; emissiveIntensity:0.45');
 
       wrap.appendChild(shaft);
       wrap.appendChild(head);
@@ -154,8 +156,7 @@
       const s = document.createElement('a-sphere');
       s.setAttribute('radius','2.0');
       s.setAttribute('position','0 10 0');
-      s.setAttribute('material',`shader: flat; color:${color}; opacity:0.6; transparent:true; depthTest:false; side:double; emissive:${color}; emissiveIntensity:1.0`);
-      // Billboarding helps spot the marker head-on if you want (optional):
+      s.setAttribute('material',`shader:standard; color:${color}; metalness:0; roughness:0.5; opacity:0.6; transparent:true; emissive:${color}; emissiveIntensity:0.2`);
       s.setAttribute('look-at', '[gps-projected-camera]');
       disableCulling(s);
       return s;
@@ -212,7 +213,7 @@
       ring.setAttribute('radius-outer','1.6');
       ring.setAttribute('rotation','-90 0 0');
       ring.setAttribute('position','0 0.1 0');
-      ring.setAttribute('material','shader: flat; color:#10B981; opacity:0.99; transparent:true; depthTest:false; side:double; emissive:#10B981; emissiveIntensity:1.5');
+      ring.setAttribute('material','shader:standard; color:#10B981; metalness:0; roughness:0.5; opacity:0.99; transparent:true; emissive:#10B981; emissiveIntensity:0.35');
       wrap.appendChild(ring);
       disableCulling(wrap);
       arrivalLayer.appendChild(wrap);
@@ -238,7 +239,7 @@
     document.addEventListener('message', onMsg);
     window.addEventListener('message', onMsg);
 
-    // Keep our own live position for HUD + advancing logic
+    // Live position for HUD + advancing logic
     let watchId = null;
     function startWatch(){
       if (watchId !== null) return;
@@ -253,7 +254,7 @@
               const dist = dMeters(here, target);
               updateHUD(dist);
 
-              // keep shown groups large and visible + re-scale with distance
+              // Re-scale shown groups with distance
               try {
                 const groups = arrowsLayer.children || [];
                 for (let i=0;i<groups.length;i++){
@@ -282,7 +283,6 @@
 
     window.addEventListener('load', function(){
       log('[AR] window load'); send({ type:'ready' });
-      // Kick a one-shot (helps prompt permission UI on some devices)
       try{
         navigator.geolocation.getCurrentPosition(
           p => { log('[AR] getCurrentPosition ok', p?.coords?.latitude, p?.coords?.longitude); },
@@ -293,8 +293,8 @@
       startWatch();
     });
 
-    // (Optional) If AR.js exposes origin event, re-render when it’s ready
-    ['gps-camera-origin-coord','gps-projected-camera-origin-coord','gps-camera-update-position'].forEach(evt=>{
+    // Re-render on camera origin/update events if available
+    ['gps-projected-camera-origin-coord','gps-camera-update-position'].forEach(evt=>{
       cameraEl && cameraEl.addEventListener(evt, () => { log('[AR] camera event:', evt); renderArrows(); });
     });
   })();
