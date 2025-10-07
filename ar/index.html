@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
     <title>TABI Agent AR Arrows</title>
-    <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.4/aframe/build/aframe-ar.js"></script>
+    <script crossorigin="anonymous" src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+    <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.4/aframe/build/aframe-ar.js"></script>
     <style>
       html, body { margin: 0; padding: 0; overflow: hidden; background: #000; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
       .hud {
@@ -153,18 +153,33 @@
         window.addEventListener('load', function(){
           try { console.log('[AR] window load'); } catch(e){}
           sendToApp({ type: 'ready' });
+          try {
+            navigator.geolocation.getCurrentPosition(function(p){
+              try { console.log('[AR] getCurrentPosition ok', p.coords && p.coords.latitude, p.coords && p.coords.longitude); } catch(e){}
+              sendToApp({ type: 'geo_ok', lat: p.coords && p.coords.latitude, lng: p.coords && p.coords.longitude });
+            }, function(err){
+              try { console.error('[AR] getCurrentPosition error', err && err.code, err && err.message); } catch(e){}
+              sendToApp({ type: 'geo_error', code: err && err.code, message: err && err.message });
+            }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 1000 });
+          } catch(e) {}
         });
 
+        var lastLog = 0;
         setInterval(function(){
           if (!anchors.length || arrived) return;
           const cameraComponents = cameraEl && cameraEl.components;
           const gps = cameraComponents && cameraComponents['gps-camera'];
           const coords = gps && (gps.currentCoords || gps.lastPosition || gps.prevCoords);
-          if (!coords){ updateHud(undefined); return; }
+          if (!coords){
+            try { if (Date.now() - lastLog > 3000) { console.log('[AR] waiting for coords'); lastLog = Date.now(); } } catch(e){}
+            updateHud(undefined);
+            return;
+          }
           const here = { lat: coords.latitude, lng: coords.longitude };
           const target = anchors[activeIndex];
           if (!target) return;
           const distance = distanceMeters(here, target);
+          try { if (Date.now() - lastLog > 3000) { console.log('[AR] here', here, 'target', target, 'distance', Math.round(distance)); lastLog = Date.now(); } } catch(e){}
           updateHud(distance);
           if (activeIndex < anchors.length - 1 && distance <= 8){
             activeIndex += 1;
