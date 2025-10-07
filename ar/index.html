@@ -21,7 +21,7 @@
 
   <a-scene
     vr-mode-ui="enabled:false"
-    renderer="colorManagement:true; physicallyCorrectLights:true"
+    renderer="colorManagement:true; physicallyCorrectLights:true; logarithmicDepthBuffer:true"
     embedded
     arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false"
   >
@@ -31,14 +31,15 @@
     <a-entity id="layer-arrows"></a-entity>
     <a-entity id="layer-arrival"></a-entity>
 
-    <!-- Debug: 3m straight ahead (confirms rendering even before GPS) -->
+    <!-- Debug: a big white ring 3 m straight ahead (always visible if rendering OK) -->
     <a-ring id="debug-forward" position="0 0 -3" rotation="-90 0 0"
-            radius-inner="0.25" radius-outer="0.35" color="#ffffff" opacity="0.85"></a-ring>
+            radius-inner="0.4" radius-outer="0.55"
+            material="shader:flat; color:#ffffff; opacity:0.95; transparent:true; depthTest:false"></a-ring>
   </a-scene>
 
   <script>
   (function(){
-    // Mute masked cross-origin noise
+    // Mute masked cross-origin noise from third-party libs
     window.addEventListener('error', e => {
       if (e.message === 'Script error.' && !e.filename) { e.preventDefault(); return true; }
     });
@@ -48,28 +49,14 @@
     const arrivalLayer = document.getElementById('layer-arrival');
     const cameraEl = document.querySelector('[gps-camera]');
     const useProjected = !!(AFRAME?.components?.['gps-projected-entity-place']);
-    let gpsReady = false;
 
     const log=(...a)=>{try{console.log(...a)}catch{}};
     const warn=(...a)=>{try{console.warn(...a)}catch{}};
     const send=(m)=>{try{window.ReactNativeWebView?.postMessage(JSON.stringify(m))}catch{}};
 
-    log('[AR] boot — useProjected =', useProjected);
+    log('[AR] DOM ok. useProjected =', useProjected);
 
-    // GPS origin ready → we can anchor safely
-    cameraEl?.addEventListener('gps-camera-origin-coord', e => {
-      gpsReady = true;
-      log('[AR] gps origin', e.detail);
-      if (!anchors.length) hud.textContent = 'GPS ready. Waiting for anchors…';
-      renderArrows(); // place if we already have anchors
-    });
-
-    cameraEl?.addEventListener('gps-camera-update-position', e => {
-      // just for logs
-      // log('[AR] gps update', e.detail);
-    });
-
-    // Geo helpers
+    // Helpers
     const toRad = d => d*Math.PI/180;
     function dMeters(a,b){
       const R=6371000, dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng), lat1=toRad(a.lat), lat2=toRad(b.lat);
@@ -77,56 +64,64 @@
       return 2*R*Math.atan2(Math.sqrt(hav), Math.sqrt(1-hav));
     }
     function clear(el){ if (!el) return; while(el.firstChild) el.removeChild(el.firstChild); }
-
-    // Aggressive distance-based scale so arrows are hard to miss
+    function disableCulling(root){
+      try{ root.object3D.traverse(o=>{ o.frustumCulled = false; }); }catch{}
+    }
+    function placeAtLatLng(node, lat, lng){
+      if (useProjected) node.setAttribute('gps-projected-entity-place', `latitude: ${lat}; longitude: ${lng}`);
+      else node.setAttribute('gps-entity-place', `latitude: ${lat}; longitude: ${lng}`);
+    }
+    // Oversized scale so you can’t miss it
     function scaleFor(distance){
-      // 5m => 8x, 20m => 16x, 80m => 24x (cap)
-      const s = Math.max(8, Math.min(24, 8 + (distance/5)));
+      const s = Math.max(10, Math.min(32, 10 + (distance/4))); // 0m=>10x, 20m=>15x, 80m=>30x
       return `${s} ${s} ${s}`;
     }
 
     function makeArrow(yawDeg, approxDistance){
       const wrap = document.createElement('a-entity');
       wrap.setAttribute('rotation', `0 ${yawDeg} 0`);
-      wrap.setAttribute('position', '0 1 0');
+      wrap.setAttribute('position', '0 10 0'); // raise 10m so it’s above ground clutter
       wrap.setAttribute('look-at', '[gps-camera]');
       wrap.setAttribute('scale', scaleFor(approxDistance || 20));
 
       const shaft = document.createElement('a-cylinder');
-      shaft.setAttribute('height','3.0');
-      shaft.setAttribute('radius','0.18');
-      shaft.setAttribute('position','0 1.5 0');
-      shaft.setAttribute('material','shader: flat; color: #00E0FF; opacity:0; transparent:true; emissive:#00E0FF; emissiveIntensity:1.0');
-      shaft.setAttribute('animation__fade','property: material.opacity; from: 0; to: 0.98; dur: 220; easing: linear');
+      shaft.setAttribute('height','6.0');
+      shaft.setAttribute('radius','0.25');
+      shaft.setAttribute('position','0 3 0');
+      shaft.setAttribute('material','shader: flat; color: #00E0FF; opacity:0.99; transparent:true; depthTest:false; side:double; emissive:#00E0FF; emissiveIntensity:1.5');
 
       const head = document.createElement('a-cone');
-      head.setAttribute('height','1.3');
-      head.setAttribute('radius-bottom','0.45');
+      head.setAttribute('height','2.2');
+      head.setAttribute('radius-bottom','0.7');
       head.setAttribute('radius-top','0.01');
-      head.setAttribute('position','0 2.6 0');
-      head.setAttribute('material','shader: flat; color: #00E0FF; opacity:0; transparent:true; emissive:#00E0FF; emissiveIntensity:1.2');
-      head.setAttribute('animation__fade','property: material.opacity; from: 0; to: 0.98; dur: 220; easing: linear');
+      head.setAttribute('position','0 5.3 0');
+      head.setAttribute('material','shader: flat; color: #00E0FF; opacity:0.99; transparent:true; depthTest:false; side:double; emissive:#00E0FF; emissiveIntensity:1.6');
 
       wrap.appendChild(shaft);
       wrap.appendChild(head);
+      disableCulling(wrap);
       return wrap;
     }
 
     function makeDebugSphere(color='#ff0000'){
       const s = document.createElement('a-sphere');
-      s.setAttribute('radius','1.2');
-      s.setAttribute('position','0 1.2 0');
-      s.setAttribute('material',`shader: flat; color:${color}; opacity:0.5; transparent:true; emissive:${color}; emissiveIntensity:0.8`);
+      s.setAttribute('radius','2.0');
+      s.setAttribute('position','0 10 0'); // same height as arrows
+      s.setAttribute('material',`shader: flat; color:${color}; opacity:0.6; transparent:true; depthTest:false; side:double; emissive:${color}; emissiveIntensity:1.0`);
+      disableCulling(s);
       return s;
     }
 
-    function placeAtLatLng(node, lat, lng){
-      if (useProjected) node.setAttribute('gps-projected-entity-place', `latitude: ${lat}; longitude: ${lng}`);
-      else node.setAttribute('gps-entity-place', `latitude: ${lat}; longitude: ${lng}`);
-    }
-
     // State
-    let anchors = []; let activeIndex = 0; let arrived = false; let lastHUD=0;
+    let anchors = []; let activeIndex = 0; let arrived = false;
+    let gpsReady = false; let lastHUD=0;
+
+    cameraEl?.addEventListener('gps-camera-origin-coord', e => {
+      gpsReady = true;
+      log('[AR] gps origin', e.detail);
+      if (!anchors.length) hud.textContent = 'GPS ready. Waiting for anchors…';
+      renderArrows(); // if anchors already sent, place them now
+    });
 
     function updateHUD(dist){
       if (!anchors.length){ hud.textContent='Waiting for anchors…'; return; }
@@ -159,11 +154,13 @@
         const node = document.createElement('a-entity');
         placeAtLatLng(node, a.lat, a.lng);
 
-        // big red debug sphere at every anchor (remove later)
+        // big debug sphere at each anchor (red = current, orange = next)
         node.appendChild(makeDebugSphere(i===0 ? '#ff0000' : '#ffa500'));
 
         const approx = here ? dMeters(here, a) : 20;
         node.appendChild(makeArrow(a.yaw, approx));
+
+        disableCulling(node);
         arrowsLayer.appendChild(node);
       });
     }
@@ -176,12 +173,13 @@
       const wrap = document.createElement('a-entity');
       placeAtLatLng(wrap, last.lat, last.lng);
       const ring = document.createElement('a-ring');
-      ring.setAttribute('radius-inner','0.9');
-      ring.setAttribute('radius-outer','1.2');
+      ring.setAttribute('radius-inner','1.2');
+      ring.setAttribute('radius-outer','1.6');
       ring.setAttribute('rotation','-90 0 0');
-      ring.setAttribute('material','shader: flat; color:#10B981; opacity:0.98; transparent:true; emissive:#10B981; emissiveIntensity:1.2');
-      ring.setAttribute('position','0 0.05 0');
+      ring.setAttribute('position','0 0.1 0');
+      ring.setAttribute('material','shader: flat; color:#10B981; opacity:0.99; transparent:true; depthTest:false; side:double; emissive:#10B981; emissiveIntensity:1.5');
       wrap.appendChild(ring);
+      disableCulling(wrap);
       arrivalLayer.appendChild(wrap);
 
       hud.textContent = 'Arrived — look around for the destination.';
@@ -207,7 +205,7 @@
 
     window.addEventListener('load', function(){
       log('[AR] window load'); send({ type:'ready' });
-      // Sanity geolocation call → logs
+      // Simple geolocation call for logs
       try{
         navigator.geolocation.getCurrentPosition(
           p => { log('[AR] getCurrentPosition ok', p?.coords?.latitude, p?.coords?.longitude); send({ type:'geo_ok', lat:p?.coords?.latitude, lng:p?.coords?.longitude }); },
@@ -232,13 +230,13 @@
       if(Date.now()-lastHUD>3000){ log('[AR] here', here, 'target', target, 'distance', Math.round(dist)); lastHUD=Date.now(); }
       updateHUD(dist);
 
-      // Make sure currently shown arrows stay huge enough to see
+      // Keep shown arrows huge each second
       try {
-        const nodes = arrowsLayer.children || [];
-        for (let i=0;i<nodes.length;i++){
-          const group = nodes[i]; // <a-entity at GPS pos>
-          const arrow = group.children && group.children[1]; // [0]=sphere, [1]=arrow
-          if (arrow) arrow.setAttribute('scale', scaleFor(dist));
+        const groups = arrowsLayer.children || [];
+        for (let i=0;i<groups.length;i++){
+          const group = groups[i];
+          group.setAttribute('scale', scaleFor(dist));
+          disableCulling(group);
         }
       } catch {}
 
