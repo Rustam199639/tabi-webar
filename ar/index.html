@@ -8,28 +8,37 @@
   <!-- A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js" crossorigin="anonymous"></script>
 
-  <!-- Shim THREE.Math expected by AR.js (A-Frame 1.4.x exposes MathUtils instead) -->
+  <!-- Robust THREE shim so AR.js (built for older THREE) works with A-Frame 1.4.x -->
   <script>
-    (function ensureThreeMathShim(){
-      function applyShim(){
-        try {
-          var T = (window.AFRAME && window.AFRAME.THREE) || window.THREE;
-          if (!T) return false;
-          // Create THREE.Math if missing and alias to MathUtils methods AR.js uses
-          if (!T.Math) { T.Math = {}; }
-          if (T.MathUtils) {
-            if (!T.Math.degToRad) T.Math.degToRad = T.MathUtils.degToRad;
-            if (!T.Math.radToDeg) T.Math.radToDeg = T.MathUtils.radToDeg;
-            if (!T.Math.clamp)    T.Math.clamp    = T.MathUtils.clamp;
+    (function fixThreeForARJS(){
+      function apply(){
+        try{
+          var A = window.AFRAME;
+          if (!A || !A.THREE) return false;
+
+          // AR.js reads from window.THREE → bind it to A-Frame’s THREE
+          if (!window.THREE) window.THREE = A.THREE;
+
+          var T = window.THREE;
+          if (!T.Math) T.Math = {};
+
+          var MU = T.MathUtils || (A.THREE && A.THREE.MathUtils);
+          if (!T.Math.degToRad) T.Math.degToRad = MU && MU.degToRad ? MU.degToRad : function(d){ return d * Math.PI / 180; };
+          if (!T.Math.radToDeg) T.Math.radToDeg = MU && MU.radToDeg ? MU.radToDeg : function(r){ return r * 180 / Math.PI; };
+          if (!T.Math.clamp)    T.Math.clamp    = MU && MU.clamp    ? MU.clamp    : function(x,min,max){ return Math.min(Math.max(x,min),max); };
+
+          // Quiet older AR.js geometry alias
+          if (!T.PlaneBufferGeometry && T.PlaneGeometry) {
+            T.PlaneBufferGeometry = T.PlaneGeometry;
           }
           return true;
-        } catch (e) { return false; }
+        }catch(e){ return false; }
       }
-      if (!applyShim()){
-        var tries = 0;
-        var id = setInterval(function(){
-          tries++; if (applyShim() || tries > 60) clearInterval(id);
+      if (!apply()){
+        var tries = 0, id = setInterval(function(){
+          if (apply() || ++tries > 80) clearInterval(id);
         }, 50);
+        document.addEventListener('DOMContentLoaded', apply, { once: true });
       }
     })();
   </script>
@@ -37,8 +46,15 @@
   <!-- AR.js (A-Frame build) -->
   <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.4/aframe/build/aframe-ar.js" crossorigin="anonymous"></script>
 
-  <!-- Billboard helper -->
+  <!-- Billboard helper (optional for labels etc.) -->
   <script src="https://unpkg.com/aframe-look-at-component@0.8.0/dist/aframe-look-at-component.min.js" crossorigin="anonymous"></script>
+
+  <!-- No-op rotation-reader to avoid missing component errors -->
+  <script>
+    if (window.AFRAME && !AFRAME.components['rotation-reader']) {
+      AFRAME.registerComponent('rotation-reader', { schema:{}, tick:function(){} });
+    }
+  </script>
 
   <style>
     html,body{margin:0;padding:0;overflow:hidden;background:#000;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
@@ -60,7 +76,7 @@
     <a-entity id="layer-arrows"></a-entity>
     <a-entity id="layer-arrival"></a-entity>
 
-    <!-- Debug: big white ring 3 m straight ahead (proves 3D render pipeline is working) -->
+    <!-- Debug: big white ring 3 m straight ahead (confirms 3D pipeline) -->
     <a-ring id="debug-forward" position="0 0 -3" rotation="-90 0 0"
             radius-inner="0.4" radius-outer="0.55"
             material="shader:flat; color:#ffffff; opacity:0.95; transparent:true; depthTest:false"></a-ring>
@@ -68,7 +84,7 @@
 
   <script>
   (function(){
-    // Silence generic “Script error.” from cross-origin libs so we only see actionable logs
+    // Silence generic cross-origin errors to keep console actionable
     window.addEventListener('error', e => {
       if (e.message === 'Script error.' && !e.filename) { e.preventDefault(); return true; }
     });
@@ -107,11 +123,11 @@
       return `${s} ${s} ${s}`;
     }
 
+    // Directional arrow — keep yaw (do NOT face the camera)
     function makeArrow(yawDeg, approxDistance){
       const wrap = document.createElement('a-entity');
       wrap.setAttribute('rotation', `0 ${yawDeg} 0`);
-      wrap.setAttribute('position', '0 10 0'); // above ground clutter
-      wrap.setAttribute('look-at', '[gps-camera]');
+      wrap.setAttribute('position', '0 10 0');
       wrap.setAttribute('scale', scaleFor(approxDistance || 20));
 
       const shaft = document.createElement('a-cylinder');
@@ -138,13 +154,15 @@
       s.setAttribute('radius','2.0');
       s.setAttribute('position','0 10 0');
       s.setAttribute('material',`shader: flat; color:${color}; opacity:0.6; transparent:true; depthTest:false; side:double; emissive:${color}; emissiveIntensity:1.0`);
+      // Billboarding helps spot the marker head-on if you want (optional):
+      s.setAttribute('look-at', '[gps-camera]');
       disableCulling(s);
       return s;
     }
 
     // State
     let anchors = []; let activeIndex = 0; let arrived = false;
-    let gpsReady = false; let lastHUD=0;
+    let gpsReady = false;
 
     // Fire when AR.js has initial origin for gps-camera
     cameraEl?.addEventListener('gps-camera-origin-coord', e => {
@@ -172,7 +190,6 @@
       log('[AR] render arrows', toShow.length, 'active', activeIndex);
       send({ type:'arrows_rendered', count: toShow.length, active: activeIndex });
 
-      // initial scale estimate based on current location
       let here = null;
       try{
         const gps = cameraEl?.components?.['gps-camera'];
@@ -185,7 +202,7 @@
         const node = document.createElement('a-entity');
         placeAtLatLng(node, a.lat, a.lng);
 
-        // big debug spheres: red=current, orange=next
+        // debug spheres: red=current, orange=next
         node.appendChild(makeDebugSphere(i===0 ? '#ff0000' : '#ffa500'));
 
         const approx = here ? dMeters(here, a) : 20;
@@ -259,7 +276,7 @@
       const dist = dMeters(here, target);
       updateHUD(dist);
 
-      // keep currently shown groups huge and visible
+      // keep shown groups large and visible
       try {
         const groups = arrowsLayer.children || [];
         for (let i=0;i<groups.length;i++){
