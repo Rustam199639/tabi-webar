@@ -37,14 +37,26 @@
   <!-- AR.js (A-Frame build) -->
   <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.4/aframe/build/aframe-ar.js" crossorigin="anonymous"></script>
 
-  <!-- Optional billboard helper -->
-  <script src="https://unpkg.com/aframe-look-at-component@0.8.0/dist/aframe-look-at-component.min.js" crossorigin="anonymous"></script>
-
   <!-- No-op rotation-reader to avoid missing component errors -->
   <script>
     if (window.AFRAME && !AFRAME.components['rotation-reader']) {
       AFRAME.registerComponent('rotation-reader', { schema:{}, tick:function(){} });
     }
+    // Always-on-top + no-cull helpers
+    AFRAME.registerComponent('always-on-top', {
+      init(){ this.el.object3D.traverse(o=>{
+        o.renderOrder = 9999;
+        if (o.material){ o.material.depthTest = false; o.material.depthWrite = false; o.material.needsUpdate = true; }
+      }); },
+      tick(){ this.el.object3D.traverse(o=>{
+        o.renderOrder = 9999;
+        if (o.material){ o.material.depthTest = false; o.material.depthWrite = false; }
+        o.frustumCulled = false;
+      }); }
+    });
+    AFRAME.registerComponent('nocull', {
+      tick(){ this.el.object3D.traverse(o=>{ o.frustumCulled = false; }); }
+    });
   </script>
 
   <style>
@@ -53,7 +65,7 @@
       position:fixed;top:8px;left:8px;right:8px;
       padding:8px 10px;background:rgba(0,0,0,.65);color:#fff;
       font-size:13px;line-height:18px;border-radius:12px;white-space:pre-line;
-      z-index:9999; pointer-events:none;
+      z-index:999999; pointer-events:none;
     }
   </style>
 </head>
@@ -62,15 +74,15 @@
 
   <a-scene
     vr-mode-ui="enabled:false"
-    renderer="colorManagement:true; physicallyCorrectLights:true; logarithmicDepthBuffer:true"
+    renderer="alpha:true; antialias:true; physicallyCorrectLights:true; logarithmicDepthBuffer:true"
     embedded
     arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false"
   >
-    <!-- Lighting so STANDARD materials look bright -->
+    <!-- Bright basic lights -->
     <a-entity light="type: ambient; intensity: 1.2"></a-entity>
-    <a-entity light="type: directional; intensity: 0.8" position="0 2 1"></a-entity>
+    <a-entity light="type: directional; intensity: 0.9" position="0 2 1"></a-entity>
 
-    <!-- Use projected camera to match projected entities; extend far plane so distant anchors show -->
+    <!-- Use projected camera to match projected entities; extend far plane a lot -->
     <a-camera gps-projected-camera rotation-reader camera="near:0.01; far:200000"></a-camera>
 
     <a-entity id="layer-arrows"></a-entity>
@@ -78,12 +90,14 @@
 
     <!-- Local debug: should always be visible 2m ahead -->
     <a-box position="0 1.6 -2" depth="0.3" height="0.3" width="0.3"
-           material="shader:standard; color:#4ADE80; metalness:0; roughness:0.4; opacity:0.9; transparent:true"></a-box>
+           material="shader:standard; color:#4ADE80; metalness:0; roughness:0.4; opacity:0.9; transparent:true"
+           always-on-top nocull></a-box>
 
-    <!-- Debug: big white ring 3 m straight ahead (confirms 3D pipeline) -->
+    <!-- Debug: big white ring 3 m straight ahead -->
     <a-ring id="debug-forward" position="0 0 -3" rotation="-90 0 0"
             radius-inner="0.4" radius-outer="0.55"
-            material="shader:standard; color:#ffffff; metalness:0; roughness:0.5; opacity:0.95; transparent:true"></a-ring>
+            material="shader:standard; color:#ffffff; metalness:0; roughness:0.5; opacity:0.95; transparent:true"
+            always-on-top nocull></a-ring>
   </a-scene>
 
   <script>
@@ -97,13 +111,12 @@
     const arrowsLayer = document.getElementById('layer-arrows');
     const arrivalLayer = document.getElementById('layer-arrival');
     const cameraEl = document.querySelector('[gps-projected-camera]');
-    const useProjected = true;
 
     const log=(...a)=>{try{console.log(...a)}catch{}};
     const warn=(...a)=>{try{console.warn(...a)}catch{}};
     const send=(m)=>{try{window.ReactNativeWebView?.postMessage(JSON.stringify(m))}catch{}};
 
-    log('[AR] DOM ok. useProjected =', useProjected);
+    log('[AR] DOM ok. useProjected = true');
 
     // Math helpers
     const toRad = d => d*Math.PI/180;
@@ -115,51 +128,61 @@
 
     // DOM helpers
     function clear(el){ if (!el) return; while(el.firstChild) el.removeChild(el.firstChild); }
-    function disableCulling(root){ try{ root.object3D.traverse(o=>{ o.frustumCulled = false; }); }catch{} }
     function placeAtLatLng(node, lat, lng){
       node.setAttribute('gps-projected-entity-place', `latitude: ${lat}; longitude: ${lng}`);
     }
 
-    // Big scale so arrows are obvious
+    // Visibility helpers
+    function forceTop(el){ try{
+      el.setAttribute('always-on-top',''); el.setAttribute('nocull','');
+    }catch{} }
+
+    // Make arrows very obvious
     function scaleFor(distance){
-      const s = Math.max(10, Math.min(32, 10 + (distance/4))); // 0m=>10x, 20m=>15x, 80m=>30x
+      const s = Math.max(24, Math.min(60, 18 + (distance/3))); // BIGGER minimum now
       return `${s} ${s} ${s}`;
     }
 
-    // Directional arrow — STANDARD material (no warnings), bright and visible
+    // Directional arrow (bright + always-on-top)
     function makeArrow(yawDeg, approxDistance){
       const wrap = document.createElement('a-entity');
       wrap.setAttribute('rotation', `0 ${yawDeg} 0`);
-      wrap.setAttribute('position', '0 10 0'); // ~10m above ground for visibility
-      wrap.setAttribute('scale', scaleFor(approxDistance || 20));
+      wrap.setAttribute('position', '0 2 0'); // ~2m above ground so it's in the FOV
+      wrap.setAttribute('scale', scaleFor(approxDistance || 30));
+      forceTop(wrap);
 
       const shaft = document.createElement('a-cylinder');
       shaft.setAttribute('height','6.0');
-      shaft.setAttribute('radius','0.25');
+      shaft.setAttribute('radius','0.35');
       shaft.setAttribute('position','0 3 0');
-      shaft.setAttribute('material','shader:standard; color:#00E0FF; metalness:0; roughness:0.4; opacity:0.98; transparent:true; emissive:#00E0FF; emissiveIntensity:0.35');
+      shaft.setAttribute('material','shader:standard; color:#00E0FF; metalness:0; roughness:0.3; opacity:1; transparent:true');
+      // depth flags on materials (belt & suspenders)
+      shaft.addEventListener('loaded', ()=> {
+        const m = shaft.getObject3D('mesh')?.material; if (m){ m.depthTest=false; m.depthWrite=false; m.needsUpdate=true; }
+      });
 
       const head = document.createElement('a-cone');
-      head.setAttribute('height','2.2');
-      head.setAttribute('radius-bottom','0.7');
+      head.setAttribute('height','2.6');
+      head.setAttribute('radius-bottom','1.1');
       head.setAttribute('radius-top','0.01');
-      head.setAttribute('position','0 5.3 0');
-      head.setAttribute('material','shader:standard; color:#00E0FF; metalness:0; roughness:0.35; opacity:0.98; transparent:true; emissive:#00E0FF; emissiveIntensity:0.45');
+      head.setAttribute('position','0 5.5 0');
+      head.setAttribute('material','shader:standard; color:#00E0FF; metalness:0; roughness:0.25; opacity:1; transparent:true');
+      head.addEventListener('loaded', ()=> {
+        const m = head.getObject3D('mesh')?.material; if (m){ m.depthTest=false; m.depthWrite=false; m.needsUpdate=true; }
+      });
 
       wrap.appendChild(shaft);
       wrap.appendChild(head);
-      disableCulling(wrap);
       return wrap;
     }
 
-    function makeDebugSphere(color='#ff0000'){
-      const s = document.createElement('a-sphere');
-      s.setAttribute('radius','2.0');
-      s.setAttribute('position','0 10 0');
-      s.setAttribute('material',`shader:standard; color:${color}; metalness:0; roughness:0.5; opacity:0.6; transparent:true; emissive:${color}; emissiveIntensity:0.2`);
-      s.setAttribute('look-at', '[gps-projected-camera]');
-      disableCulling(s);
-      return s;
+    function makeDebugBillboard(txt='●', color='#ff0000'){
+      const e = document.createElement('a-entity');
+      e.setAttribute('position','0 2 0');
+      e.setAttribute('text',`value:${txt}; color:${color}; align:center; width:6;`);
+      e.setAttribute('look-at','[gps-projected-camera]');
+      forceTop(e);
+      return e;
     }
 
     // State
@@ -189,14 +212,14 @@
         const a = anchors[idx];
         const node = document.createElement('a-entity');
         placeAtLatLng(node, a.lat, a.lng);
+        forceTop(node);
 
-        // debug spheres: red=current, orange=next
-        node.appendChild(makeDebugSphere(i===0 ? '#ff0000' : '#ffa500'));
+        // obvious label + arrow
+        node.appendChild(makeDebugBillboard(i===0 ? 'NEXT' : '→', i===0 ? '#ff4444' : '#ffaa00'));
 
-        const approx = here ? dMeters(here, a) : 20;
+        const approx = here ? dMeters(here, a) : 30;
         node.appendChild(makeArrow(a.yaw, approx));
 
-        disableCulling(node);
         arrowsLayer.appendChild(node);
       });
     }
@@ -208,16 +231,26 @@
 
       const wrap = document.createElement('a-entity');
       placeAtLatLng(wrap, last.lat, last.lng);
-      const ring = document.createElement('a-ring');
-      ring.setAttribute('radius-inner','1.2');
-      ring.setAttribute('radius-outer','1.6');
-      ring.setAttribute('rotation','-90 0 0');
-      ring.setAttribute('position','0 0.1 0');
-      ring.setAttribute('material','shader:standard; color:#10B981; metalness:0; roughness:0.5; opacity:0.99; transparent:true; emissive:#10B981; emissiveIntensity:0.35');
-      wrap.appendChild(ring);
-      disableCulling(wrap);
-      arrivalLayer.appendChild(wrap);
+      forceTop(wrap);
 
+      const ring = document.createElement('a-ring');
+      ring.setAttribute('radius-inner','2.0');
+      ring.setAttribute('radius-outer','2.6');
+      ring.setAttribute('rotation','-90 0 0');
+      ring.setAttribute('position','0 0.2 0');
+      ring.setAttribute('material','shader:standard; color:#10B981; metalness:0; roughness:0.5; opacity:1; transparent:true');
+      ring.addEventListener('loaded', ()=> {
+        const m = ring.getObject3D('mesh')?.material; if (m){ m.depthTest=false; m.depthWrite=false; m.needsUpdate=true; }
+      });
+      wrap.appendChild(ring);
+
+      const txt = document.createElement('a-entity');
+      txt.setAttribute('text','value:ARRIVED; color:#10B981; align:center; width:8;');
+      txt.setAttribute('position','0 2 0');
+      txt.setAttribute('look-at','[gps-projected-camera]');
+      wrap.appendChild(txt);
+
+      arrivalLayer.appendChild(wrap);
       hud.textContent = 'Arrived — look around for the destination.';
       send({ type:'arrived' });
     }
@@ -254,13 +287,13 @@
               const dist = dMeters(here, target);
               updateHUD(dist);
 
-              // Re-scale shown groups with distance
+              // fat re-scale (just keep first group huge)
               try {
                 const groups = arrowsLayer.children || [];
                 for (let i=0;i<groups.length;i++){
                   const group = groups[i];
-                  group.setAttribute('scale', scaleFor(dist));
-                  disableCulling(group);
+                  group.setAttribute('nocull','');
+                  group.object3D.traverse(o=>{ o.frustumCulled=false; o.renderOrder=9999; });
                 }
               } catch {}
 
