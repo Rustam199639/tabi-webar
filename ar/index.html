@@ -87,11 +87,13 @@
 (function(){
   // ======= CONFIG =======
   const CONFIG = {
-    fixedScale: 70,          // 🔵 make ALL arrows this large (same bright-big look)
-    showAllAnchors: true,    // 🔵 render ALL anchors at once
-    maxRenderDistanceM: 500, // (safety) still skip ultra-far anchors
-    hideARVideo: true        // (optional) hide <video> element AR.js uses
-  };
+  arrowsEnabled: true,     // set to false if you want ALL arrows hidden
+  fixedScale: 16,          // ⬅️ much smaller (you can try 12–20)
+  showAllAnchors: true,    // render many arrows (set to false to show fewer)
+  minDistanceM: 10,        // ⬅️ don't render arrows closer than 10m
+  maxRenderDistanceM: 500,
+  hideARVideo: true
+};
 
   // ======= Helpers =======
   const hud = document.getElementById('hud');
@@ -107,11 +109,11 @@
   function clear(el){ while(el.firstChild) el.removeChild(el.firstChild); }
   function placeAtLatLng(node, lat, lng){ node.setAttribute('gps-entity-place',`latitude:${lat}; longitude:${lng}`); }
 
-  function makeArrow(yawDeg){
+  function makeArrow(yawDeg, scaleVal){
     const wrap=document.createElement('a-entity');
     wrap.setAttribute('rotation',`0 ${yawDeg||0} 0`);
-    wrap.setAttribute('position','0 2 0'); // eye-ish height
-    wrap.setAttribute('scale', `${CONFIG.fixedScale} ${CONFIG.fixedScale} ${CONFIG.fixedScale}`);
+    wrap.setAttribute('position','0 2 0');
+    wrap.setAttribute('scale', `${scaleVal} ${scaleVal} ${scaleVal}`); // ⬅️ here
     wrap.setAttribute('always-on-top','');
 
     // BIG, BRIGHT, FLAT (no lights needed)
@@ -141,6 +143,15 @@
     console.log('[INFO] HUD', {activeIndex, dist:dt});
   }
 
+  function scaleForDistance(distM){
+  // smaller when close, a bit larger farther away (cap at 32)
+  if (distM == null) return CONFIG.fixedScale || 16;
+  const min=12, max=32, span=80;                  // tune as you like
+  const d = Math.max(0, Math.min(span, distM));   // clamp 0..80m
+  const s = min + (max-min)*(d/span);
+  return CONFIG.fixedScale || s;
+}
+
   // ======= Render =======
   function renderArrows(){
     console.log('[INFO] RENDER begin', {activeIndex, total:anchors.length, originReady});
@@ -163,12 +174,21 @@
 
     console.log('[INFO] RENDER will show', {count:list.length, indices:list});
     list.forEach(idx=>{
-      const a=anchors[idx];
-      const n=document.createElement('a-entity');
+      const a = anchors[idx];
+      const dist = here ? dMeters(here, a) : null;
+
+      // hide arrows that are too close
+      if (dist !== null && dist < CONFIG.minDistanceM) return;
+
+      const n = document.createElement('a-entity');
       placeAtLatLng(n, a.lat, a.lng);
-      n.appendChild(makeArrow(a.yaw));
+
+      const sc = scaleForDistance(dist);
+      n.appendChild(makeArrow(a.yaw, sc));
+
       arrowsLayer.appendChild(n);
     });
+
     console.log('[INFO] RENDER end', {children:arrowsLayer.children.length});
   }
 
