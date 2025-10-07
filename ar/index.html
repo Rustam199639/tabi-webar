@@ -1,241 +1,255 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-    <title>TABI Agent AR Arrows</title>
-    <script src="https://aframe.io/releases/1.4.2/aframe.min.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.4/aframe/build/aframe-ar.js" crossorigin="anonymous"></script>
-    <style>
-      html, body { margin:0; padding:0; overflow:hidden; background:#000; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-      .hud {
-        position:fixed; top:8px; left:8px; right:8px; padding:8px 10px;
-        background:rgba(0,0,0,.55); color:#fff; font-size:13px; line-height:18px; border-radius:12px; white-space:pre-line;
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+  <title>TABI Agent AR Arrows</title>
+
+  <!-- A-Frame + AR.js -->
+  <script src="https://aframe.io/releases/1.4.2/aframe.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.4/aframe/build/aframe-ar.js" crossorigin="anonymous"></script>
+  <!-- Billboard helper -->
+  <script src="https://unpkg.com/aframe-look-at-component@0.8.0/dist/aframe-look-at-component.min.js" crossorigin="anonymous"></script>
+
+  <style>
+    html,body{margin:0;padding:0;overflow:hidden;background:#000;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+    .hud{position:fixed;top:8px;left:8px;right:8px;padding:8px 10px;background:rgba(0,0,0,.55);color:#fff;font-size:13px;line-height:18px;border-radius:12px;white-space:pre-line}
+  </style>
+</head>
+<body>
+  <div id="hud" class="hud">Loading… allow camera & motion when prompted.</div>
+
+  <a-scene
+    vr-mode-ui="enabled:false"
+    renderer="colorManagement:true; physicallyCorrectLights:true"
+    embedded
+    arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false"
+  >
+    <a-entity light="type: ambient; intensity: 1"></a-entity>
+    <a-camera gps-camera rotation-reader></a-camera>
+
+    <a-entity id="layer-arrows"></a-entity>
+    <a-entity id="layer-arrival"></a-entity>
+
+    <!-- Debug: 3m straight ahead (confirms rendering even before GPS) -->
+    <a-ring id="debug-forward" position="0 0 -3" rotation="-90 0 0"
+            radius-inner="0.25" radius-outer="0.35" color="#ffffff" opacity="0.85"></a-ring>
+  </a-scene>
+
+  <script>
+  (function(){
+    // Mute masked cross-origin noise
+    window.addEventListener('error', e => {
+      if (e.message === 'Script error.' && !e.filename) { e.preventDefault(); return true; }
+    });
+
+    const hud = document.getElementById('hud');
+    const arrowsLayer = document.getElementById('layer-arrows');
+    const arrivalLayer = document.getElementById('layer-arrival');
+    const cameraEl = document.querySelector('[gps-camera]');
+    const useProjected = !!(AFRAME?.components?.['gps-projected-entity-place']);
+    let gpsReady = false;
+
+    const log=(...a)=>{try{console.log(...a)}catch{}};
+    const warn=(...a)=>{try{console.warn(...a)}catch{}};
+    const send=(m)=>{try{window.ReactNativeWebView?.postMessage(JSON.stringify(m))}catch{}};
+
+    log('[AR] boot — useProjected =', useProjected);
+
+    // GPS origin ready → we can anchor safely
+    cameraEl?.addEventListener('gps-camera-origin-coord', e => {
+      gpsReady = true;
+      log('[AR] gps origin', e.detail);
+      if (!anchors.length) hud.textContent = 'GPS ready. Waiting for anchors…';
+      renderArrows(); // place if we already have anchors
+    });
+
+    cameraEl?.addEventListener('gps-camera-update-position', e => {
+      // just for logs
+      // log('[AR] gps update', e.detail);
+    });
+
+    // Geo helpers
+    const toRad = d => d*Math.PI/180;
+    function dMeters(a,b){
+      const R=6371000, dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng), lat1=toRad(a.lat), lat2=toRad(b.lat);
+      const hav = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+      return 2*R*Math.atan2(Math.sqrt(hav), Math.sqrt(1-hav));
+    }
+    function clear(el){ if (!el) return; while(el.firstChild) el.removeChild(el.firstChild); }
+
+    // Aggressive distance-based scale so arrows are hard to miss
+    function scaleFor(distance){
+      // 5m => 8x, 20m => 16x, 80m => 24x (cap)
+      const s = Math.max(8, Math.min(24, 8 + (distance/5)));
+      return `${s} ${s} ${s}`;
+    }
+
+    function makeArrow(yawDeg, approxDistance){
+      const wrap = document.createElement('a-entity');
+      wrap.setAttribute('rotation', `0 ${yawDeg} 0`);
+      wrap.setAttribute('position', '0 1 0');
+      wrap.setAttribute('look-at', '[gps-camera]');
+      wrap.setAttribute('scale', scaleFor(approxDistance || 20));
+
+      const shaft = document.createElement('a-cylinder');
+      shaft.setAttribute('height','3.0');
+      shaft.setAttribute('radius','0.18');
+      shaft.setAttribute('position','0 1.5 0');
+      shaft.setAttribute('material','shader: flat; color: #00E0FF; opacity:0; transparent:true; emissive:#00E0FF; emissiveIntensity:1.0');
+      shaft.setAttribute('animation__fade','property: material.opacity; from: 0; to: 0.98; dur: 220; easing: linear');
+
+      const head = document.createElement('a-cone');
+      head.setAttribute('height','1.3');
+      head.setAttribute('radius-bottom','0.45');
+      head.setAttribute('radius-top','0.01');
+      head.setAttribute('position','0 2.6 0');
+      head.setAttribute('material','shader: flat; color: #00E0FF; opacity:0; transparent:true; emissive:#00E0FF; emissiveIntensity:1.2');
+      head.setAttribute('animation__fade','property: material.opacity; from: 0; to: 0.98; dur: 220; easing: linear');
+
+      wrap.appendChild(shaft);
+      wrap.appendChild(head);
+      return wrap;
+    }
+
+    function makeDebugSphere(color='#ff0000'){
+      const s = document.createElement('a-sphere');
+      s.setAttribute('radius','1.2');
+      s.setAttribute('position','0 1.2 0');
+      s.setAttribute('material',`shader: flat; color:${color}; opacity:0.5; transparent:true; emissive:${color}; emissiveIntensity:0.8`);
+      return s;
+    }
+
+    function placeAtLatLng(node, lat, lng){
+      if (useProjected) node.setAttribute('gps-projected-entity-place', `latitude: ${lat}; longitude: ${lng}`);
+      else node.setAttribute('gps-entity-place', `latitude: ${lat}; longitude: ${lng}`);
+    }
+
+    // State
+    let anchors = []; let activeIndex = 0; let arrived = false; let lastHUD=0;
+
+    function updateHUD(dist){
+      if (!anchors.length){ hud.textContent='Waiting for anchors…'; return; }
+      if (arrived){ hud.textContent='Arrived — look around for the destination.'; return; }
+      const next = anchors[activeIndex];
+      const label = `${activeIndex+1}/${anchors.length}`;
+      const dt = (typeof dist==='number') ? `${Math.max(0,Math.round(dist))} m` : '…';
+      hud.textContent = `Next: ${label} — ${dt}${next?`\n(${next.lat.toFixed(5)}, ${next.lng.toFixed(5)})`:''}`;
+    }
+
+    function renderArrows(){
+      if (!gpsReady) { log('[AR] defer render — GPS origin not ready'); return; }
+      clear(arrivalLayer); clear(arrowsLayer);
+      if (!anchors.length || arrived) return;
+
+      const toShow = [activeIndex, activeIndex+1].filter(i => i < anchors.length);
+      log('[AR] render arrows', toShow.length, 'active', activeIndex);
+      send({ type:'arrows_rendered', count: toShow.length, active: activeIndex });
+
+      // approximate distance for initial scale
+      let here = null;
+      try{
+        const gps = cameraEl?.components?.['gps-camera'];
+        const c = gps && (gps.currentCoords || gps.lastPosition || gps.prevCoords);
+        if (c) here = { lat:c.latitude, lng:c.longitude };
+      }catch{}
+
+      toShow.forEach((idx,i) => {
+        const a = anchors[idx];
+        const node = document.createElement('a-entity');
+        placeAtLatLng(node, a.lat, a.lng);
+
+        // big red debug sphere at every anchor (remove later)
+        node.appendChild(makeDebugSphere(i===0 ? '#ff0000' : '#ffa500'));
+
+        const approx = here ? dMeters(here, a) : 20;
+        node.appendChild(makeArrow(a.yaw, approx));
+        arrowsLayer.appendChild(node);
+      });
+    }
+
+    function showArrival(){
+      arrived = true;
+      clear(arrowsLayer); clear(arrivalLayer);
+      const last = anchors[anchors.length-1]; if (!last) return;
+
+      const wrap = document.createElement('a-entity');
+      placeAtLatLng(wrap, last.lat, last.lng);
+      const ring = document.createElement('a-ring');
+      ring.setAttribute('radius-inner','0.9');
+      ring.setAttribute('radius-outer','1.2');
+      ring.setAttribute('rotation','-90 0 0');
+      ring.setAttribute('material','shader: flat; color:#10B981; opacity:0.98; transparent:true; emissive:#10B981; emissiveIntensity:1.2');
+      ring.setAttribute('position','0 0.05 0');
+      wrap.appendChild(ring);
+      arrivalLayer.appendChild(wrap);
+
+      hud.textContent = 'Arrived — look around for the destination.';
+      send({ type:'arrived' });
+    }
+
+    function setAnchors(data){
+      anchors = Array.isArray(data) ? data : [];
+      activeIndex = 0; arrived = false;
+      log('[AR] anchors received', anchors.length);
+      send({ type:'anchors_received', count: anchors.length });
+      renderArrows(); updateHUD(undefined);
+    }
+
+    function onMsg(ev){
+      try{
+        const p = JSON.parse(ev.data);
+        if (p?.type === 'anchors') setAnchors(p.data);
+      }catch(err){ warn('[AR] invalid message', err); }
+    }
+    document.addEventListener('message', onMsg);
+    window.addEventListener('message', onMsg);
+
+    window.addEventListener('load', function(){
+      log('[AR] window load'); send({ type:'ready' });
+      // Sanity geolocation call → logs
+      try{
+        navigator.geolocation.getCurrentPosition(
+          p => { log('[AR] getCurrentPosition ok', p?.coords?.latitude, p?.coords?.longitude); send({ type:'geo_ok', lat:p?.coords?.latitude, lng:p?.coords?.longitude }); },
+          e => { warn('[AR] getCurrentPosition error', e?.code, e?.message); send({ type:'geo_error', code:e?.code, message:e?.message }); },
+          { enableHighAccuracy:true, timeout:10000, maximumAge:1000 }
+        );
+      }catch(e){ warn('[AR] geolocation call failed', e); }
+    });
+
+    // Main tick
+    setInterval(function(){
+      if(!anchors.length || !gpsReady || arrived) return;
+
+      const gps = cameraEl?.components?.['gps-camera'];
+      const c = gps && (gps.currentCoords || gps.lastPosition || gps.prevCoords);
+      if(!c){ if(Date.now()-lastHUD>3000){ log('[AR] waiting for coords'); lastHUD=Date.now(); } updateHUD(undefined); return; }
+
+      const here = { lat:c.latitude, lng:c.longitude };
+      const target = anchors[activeIndex]; if (!target) return;
+
+      const dist = dMeters(here, target);
+      if(Date.now()-lastHUD>3000){ log('[AR] here', here, 'target', target, 'distance', Math.round(dist)); lastHUD=Date.now(); }
+      updateHUD(dist);
+
+      // Make sure currently shown arrows stay huge enough to see
+      try {
+        const nodes = arrowsLayer.children || [];
+        for (let i=0;i<nodes.length;i++){
+          const group = nodes[i]; // <a-entity at GPS pos>
+          const arrow = group.children && group.children[1]; // [0]=sphere, [1]=arrow
+          if (arrow) arrow.setAttribute('scale', scaleFor(dist));
+        }
+      } catch {}
+
+      if (activeIndex < anchors.length-1 && dist <= 8){
+        activeIndex += 1; renderArrows(); updateHUD(dMeters(here, anchors[activeIndex]));
+        log('[AR] advance to', activeIndex); send({ type:'advance', idx: activeIndex });
+      } else if (activeIndex === anchors.length-1 && dist <= 25 && !arrived){
+        showArrival();
       }
-    </style>
-  </head>
-  <body>
-    <div id="hud" class="hud">Loading… allow camera & motion when prompted.</div>
-
-    <a-scene
-      vr-mode-ui="enabled:false"
-      renderer="colorManagement:true; physicallyCorrectLights:true"
-      embedded
-      arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false"
-    >
-      <a-camera gps-camera rotation-reader></a-camera>
-      <a-entity id="layer-arrows"></a-entity>
-      <a-entity id="layer-arrival"></a-entity>
-      <!-- Debug: 3m straight ahead so you know rendering works -->
-      <a-ring id="debug-forward"
-              position="0 0 -3" rotation="-90 0 0"
-              radius-inner="0.25" radius-outer="0.35"
-              color="#ffffff" opacity="0.8"></a-ring>
-    </a-scene>
-
-    <script>
-      (function(){
-        // Mute masked cross-origin noise
-        window.addEventListener('error', function(e){
-          if (e.message === 'Script error.' && !e.filename) { e.preventDefault(); return true; }
-        });
-
-        const hud = document.getElementById('hud');
-        const arrowsLayer = document.getElementById('layer-arrows');
-        const arrivalLayer = document.getElementById('layer-arrival');
-        const cameraEl = document.querySelector('[gps-camera]');
-        const useProjected = !!(AFRAME && AFRAME.components && AFRAME.components['gps-projected-entity-place']);
-
-        function log(){ try{ console.log.apply(console, arguments); }catch{} }
-        function warn(){ try{ console.warn.apply(console, arguments); }catch{} }
-        function send(msg){ try{ window.ReactNativeWebView?.postMessage(JSON.stringify(msg)); }catch{} }
-
-        log('[AR] DOM ok. useProjected =', useProjected);
-
-        // Optional GPS lifecycle logs
-        try {
-          cameraEl.addEventListener('gps-camera-origin-coord', e => log('[AR] gps origin', e.detail));
-          cameraEl.addEventListener('gps-camera-update-position', e => log('[AR] gps update', e.detail));
-        } catch {}
-
-        const toRad = d => d * Math.PI / 180;
-        function dMeters(a,b){
-          const R=6371000, dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng), lat1=toRad(a.lat), lat2=toRad(b.lat);
-          const hav = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
-          return 2*R*Math.atan2(Math.sqrt(hav), Math.sqrt(1-hav));
-        }
-        function clear(el){ if(!el) return; while(el.firstChild) el.removeChild(el.firstChild); }
-
-        // Distance-based scale (big enough to see; capped)
-        function scaleFor(distance){
-          // at 10m => ~2x, 50m => ~6x, cap at 10x
-          const s = Math.max(2, Math.min(10, distance / 8));
-          return `${s} ${s} ${s}`;
-        }
-
-        // Arrow prefab (billboard to camera so you always catch it)
-        function makeArrow(yawDeg, approxDistance){
-          const wrapper = document.createElement('a-entity');
-          wrapper.setAttribute('rotation', `0 ${yawDeg} 0`);
-          wrapper.setAttribute('position', '0 1 0');
-          wrapper.setAttribute('look-at', '[gps-camera]'); // billboard toward camera
-          wrapper.setAttribute('scale', scaleFor(approxDistance || 20));
-
-          const shaft = document.createElement('a-cylinder');
-          shaft.setAttribute('height', '2.4');
-          shaft.setAttribute('radius', '0.12');
-          shaft.setAttribute('position', '0 1.2 0');
-          shaft.setAttribute('color', '#00E0FF');
-          shaft.setAttribute('material', 'opacity:0; transparent:true; emissive:#00E0FF; emissiveIntensity:0.6');
-          shaft.setAttribute('animation__fade', 'property: material.opacity; from: 0; to: 0.95; dur: 250; easing: linear');
-
-          const head = document.createElement('a-cone');
-          head.setAttribute('height', '1.0');
-          head.setAttribute('radius-bottom', '0.35');
-          head.setAttribute('radius-top', '0.01');
-          head.setAttribute('position', '0 2.2 0');
-          head.setAttribute('color', '#00E0FF');
-          head.setAttribute('material', 'opacity:0; transparent:true; emissive:#00E0FF; emissiveIntensity:0.9');
-          head.setAttribute('animation__fade', 'property: material.opacity; from: 0; to: 0.95; dur: 250; easing: linear');
-
-          wrapper.appendChild(shaft);
-          wrapper.appendChild(head);
-          return wrapper;
-        }
-
-        // State
-        let anchors = []; let activeIndex = 0; let arrived = false; let lastLog = 0;
-
-        function updateHUD(dist){
-          if(!anchors.length){ hud.textContent = 'Waiting for anchors…'; return; }
-          if(arrived){ hud.textContent = 'Arrived — look around for the destination.'; return; }
-          const next = anchors[activeIndex];
-          const label = `${activeIndex+1}/${anchors.length}`;
-          const dt = (typeof dist === 'number') ? `${Math.max(0, Math.round(dist))} m` : '…';
-          hud.textContent = `Next: ${label} — ${dt}${next ? `\n(${next.lat.toFixed(5)}, ${next.lng.toFixed(5)})` : ''}`;
-        }
-
-        function placeAtLatLng(node, lat, lng){
-          if (useProjected) {
-            node.setAttribute('gps-projected-entity-place', `latitude: ${lat}; longitude: ${lng}`);
-          } else {
-            node.setAttribute('gps-entity-place', `latitude: ${lat}; longitude: ${lng}`);
-          }
-        }
-
-        function renderArrows(){
-          clear(arrivalLayer); clear(arrowsLayer);
-          if(!anchors.length || arrived) return;
-
-          const toShow = [activeIndex, activeIndex+1].filter(i => i < anchors.length);
-          log('[AR] render arrows', toShow.length, 'active', activeIndex);
-          send({ type:'arrows_rendered', count: toShow.length, active: activeIndex });
-
-          // Estimate distance for initial scale
-          let here = null;
-          try {
-            const gps = cameraEl?.components?.['gps-camera'];
-            const c = gps && (gps.currentCoords || gps.lastPosition || gps.prevCoords);
-            if (c) here = { lat: c.latitude, lng: c.longitude };
-          } catch {}
-
-          toShow.forEach(idx => {
-            const anchor = anchors[idx];
-            const node = document.createElement('a-entity');
-            placeAtLatLng(node, anchor.lat, anchor.lng);
-            const approx = here ? dMeters(here, anchor) : 20;
-            node.appendChild(makeArrow(anchor.yaw, approx));
-            arrowsLayer.appendChild(node);
-          });
-        }
-
-        function showArrival(){
-          arrived = true;
-          clear(arrowsLayer); clear(arrivalLayer);
-          const last = anchors[anchors.length-1]; if(!last) return;
-
-          const wrap = document.createElement('a-entity');
-          placeAtLatLng(wrap, last.lat, last.lng);
-
-          const ring = document.createElement('a-ring');
-          ring.setAttribute('radius-inner','0.7');
-          ring.setAttribute('radius-outer','0.95');
-          ring.setAttribute('rotation','-90 0 0');
-          ring.setAttribute('color','#10B981');
-          ring.setAttribute('opacity','0.95');
-          ring.setAttribute('position','0 0.05 0');
-
-          wrap.appendChild(ring);
-          arrivalLayer.appendChild(wrap);
-          hud.textContent = 'Arrived — look around for the destination.';
-          send({ type:'arrived' });
-        }
-
-        function setAnchors(data){
-          anchors = Array.isArray(data) ? data : [];
-          activeIndex = 0; arrived = false;
-          log('[AR] anchors received', anchors.length);
-          send({ type:'anchors_received', count: anchors.length });
-          renderArrows(); updateHUD(undefined);
-        }
-
-        function onMsg(ev){
-          try{
-            const p = JSON.parse(ev.data);
-            if (p?.type === 'anchors') setAnchors(p.data);
-          }catch(err){ warn('[AR] invalid message', err); }
-        }
-        document.addEventListener('message', onMsg);
-        window.addEventListener('message', onMsg);
-
-        window.addEventListener('load', function(){
-          log('[AR] window load'); send({ type:'ready' });
-          // Quick geolocation call (sanity/logs)
-          try {
-            navigator.geolocation.getCurrentPosition(
-              p => { log('[AR] getCurrentPosition ok', p?.coords?.latitude, p?.coords?.longitude); send({ type:'geo_ok', lat:p?.coords?.latitude, lng:p?.coords?.longitude }); },
-              e => { warn('[AR] getCurrentPosition error', e?.code, e?.message); send({ type:'geo_error', code:e?.code, message:e?.message }); },
-              { enableHighAccuracy:true, timeout:10000, maximumAge:1000 }
-            );
-          } catch(e) { warn('[AR] geolocation call failed', e); }
-        });
-
-        setInterval(function(){
-          if(!anchors.length || arrived) return;
-
-          const gps = cameraEl?.components?.['gps-camera'];
-          const c = gps && (gps.currentCoords || gps.lastPosition || gps.prevCoords);
-          if(!c){
-            if(Date.now() - lastLog > 3000){ log('[AR] waiting for coords'); lastLog = Date.now(); }
-            updateHUD(undefined);
-            return;
-          }
-          const here = { lat:c.latitude, lng:c.longitude };
-          const target = anchors[activeIndex]; if(!target) return;
-
-          const dist = dMeters(here, target);
-          if(Date.now() - lastLog > 3000){
-            log('[AR] here', here, 'target', target, 'distance', Math.round(dist)); lastLog = Date.now();
-          }
-          updateHUD(dist);
-
-          // Update scale smoothly for current arrows
-          try {
-            const nodes = arrowsLayer.children || [];
-            for (let i=0;i<nodes.length;i++){
-              const child = nodes[i].children && nodes[i].children[0];
-              if (child) child.setAttribute('scale', scaleFor(dist));
-            }
-          } catch {}
-
-          if (activeIndex < anchors.length-1 && dist <= 8){
-            activeIndex += 1; renderArrows(); updateHUD(dMeters(here, anchors[activeIndex]));
-            log('[AR] advance to', activeIndex); send({ type:'advance', idx: activeIndex });
-          } else if (activeIndex === anchors.length-1 && dist <= 25 && !arrived){
-            showArrival();
-          }
-        }, 1000);
-      })();
-    </script>
-  </body>
+    }, 1000);
+  })();
+  </script>
+</body>
 </html>
