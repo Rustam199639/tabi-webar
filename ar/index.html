@@ -29,7 +29,7 @@
       vr-mode-ui="enabled: false"
       renderer="colorManagement: true; physicallyCorrectLights: true"
       embedded
-      arjs="sourceType: webcam; facingMode: environment; videoTexture: true; trackingMethod: best; debugUIEnabled: false"
+      arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false; sourceParameters: { facingMode: environment }"
     >
       <!-- These must exist before the script runs -->
       <a-camera gps-camera></a-camera>
@@ -43,10 +43,32 @@
         // --- reduce noise from cross-origin libs (A-Frame/AR.js) ---
         window.addEventListener('error', function (e) {
           if (e.message === 'Script error.' && !e.filename) {
-            e.preventDefault(); // mute generic masked errors
+            // mute generic masked errors from cross-origin scripts
+            e.preventDefault();
             return true;
           }
         });
+        // also filter in window.onerror (some webviews still call it)
+        const _origOnError = window.onerror;
+        window.onerror = function (msg, src, line, col, err) {
+          if (msg === 'Script error.' && (!src || src === '')) {
+            return true; // swallow
+          }
+          try {
+            if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+              window.ReactNativeWebView.postMessage(JSON.stringify({
+                type: 'onerror',
+                msg: String(msg), src, line, col,
+                err: (err && (err.stack || String(err))) || null
+              }));
+            }
+          } catch {}
+          if (typeof _origOnError === 'function') {
+            try { return _origOnError(msg, src, line, col, err); } catch {}
+          }
+          return false;
+        };
+
         window.addEventListener('unhandledrejection', function (e) {
           try { console.warn('[AR] unhandledrejection', e.reason); } catch {}
         });
@@ -260,11 +282,6 @@
             showArrivalMarker();
           }
         }, 1000);
-
-        // forward uncaught errors to RN with details (for same-origin scripts)
-        window.onerror = function (msg, src, line, col, err) {
-          sendToApp({ type: 'onerror', msg: String(msg), src, line, col, err: (err && (err.stack || String(err))) });
-        };
       })();
     </script>
   </body>
