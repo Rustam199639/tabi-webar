@@ -7,7 +7,7 @@
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
     <title>TABI Agent AR Arrows</title>
-    <!-- A-Frame + AR.js (with CORS so errors aren't masked) -->
+    <!-- A-Frame + AR.js (CORS enabled so real errors aren’t masked) -->
     <script src="https://aframe.io/releases/1.4.2/aframe.min.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.4/aframe/build/aframe-ar.js" crossorigin="anonymous"></script>
     <style>
@@ -31,16 +31,27 @@
       embedded
       arjs="sourceType: webcam; facingMode: environment; videoTexture: true; trackingMethod: best; debugUIEnabled: false"
     >
-      <!-- camera & layers must exist BEFORE the script runs -->
+      <!-- These must exist before the script runs -->
       <a-camera gps-camera></a-camera>
       <a-entity id="layer-arrows"></a-entity>
       <a-entity id="layer-arrival"></a-entity>
     </a-scene>
 
-    <!-- Script goes AFTER scene so DOM nodes are present -->
+    <!-- Script goes AFTER the scene so DOM nodes are present -->
     <script>
       (function () {
-        // --- basic plumbing
+        // --- reduce noise from cross-origin libs (A-Frame/AR.js) ---
+        window.addEventListener('error', function (e) {
+          if (e.message === 'Script error.' && !e.filename) {
+            e.preventDefault(); // mute generic masked errors
+            return true;
+          }
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          try { console.warn('[AR] unhandledrejection', e.reason); } catch {}
+        });
+
+        // --- basics / DOM refs ---
         const hud = document.getElementById('hud');
         const arrowsLayer = document.getElementById('layer-arrows');
         const arrivalLayer = document.getElementById('layer-arrival');
@@ -58,7 +69,6 @@
           } catch (e) {}
         }
 
-        // sanity check the DOM
         if (!arrowsLayer || !arrivalLayer || !cameraEl) {
           error('[AR] missing DOM nodes', { arrowsLayer: !!arrowsLayer, arrivalLayer: !!arrivalLayer, cameraEl: !!cameraEl });
           sendToApp({ type: 'error', reason: 'missing-dom', arrows: !!arrowsLayer, arrival: !!arrivalLayer, camera: !!cameraEl });
@@ -66,7 +76,13 @@
           log('[AR] DOM ok: layers & gps-camera found.');
         }
 
-        // --- geo helpers
+        // Optional: see AR.js gps-camera lifecycle logs
+        try {
+          cameraEl.addEventListener('gps-camera-origin-coord', e => log('[AR] gps origin', e.detail));
+          cameraEl.addEventListener('gps-camera-update-position', e => log('[AR] gps update', e.detail));
+        } catch {}
+
+        // --- geo helpers ---
         const toRad = (deg) => (deg * Math.PI) / 180;
         function distanceMeters(a, b) {
           const R = 6371000;
@@ -77,13 +93,9 @@
           const hav = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
           return 2 * R * Math.atan2(Math.sqrt(hav), Math.sqrt(1 - hav));
         }
+        function clearLayer(el) { if (!el) return; while (el.firstChild) el.removeChild(el.firstChild); }
 
-        function clearLayer(el) {
-          if (!el) return;
-          while (el.firstChild) el.removeChild(el.firstChild);
-        }
-
-        // --- arrow prefab (animate real material props)
+        // --- arrow prefab: animate real material props (safe) ---
         function makeArrow(yawDeg) {
           const wrapper = document.createElement('a-entity');
           wrapper.setAttribute('rotation', `0 ${yawDeg} 0`);
@@ -111,7 +123,7 @@
           return wrapper;
         }
 
-        // --- state
+        // --- state ---
         let anchors = [];
         let activeIndex = 0;
         let arrived = false;
@@ -120,7 +132,6 @@
         function updateHud(distance) {
           if (!anchors.length) { hud.textContent = 'Waiting for anchors…'; return; }
           if (arrived)         { hud.textContent = 'Arrived — look around for the destination.'; return; }
-
           const next = anchors[activeIndex];
           const label = `${activeIndex + 1}/${anchors.length}`;
           const distText = (typeof distance === 'number') ? `${Math.max(0, Math.round(distance))} m` : '…';
@@ -172,7 +183,7 @@
           sendToApp({ type: 'arrived' });
         }
 
-        // --- anchors ingress
+        // --- anchors ingress from RN WebView ---
         function setAnchors(data) {
           anchors = Array.isArray(data) ? data : [];
           activeIndex = 0;
@@ -193,12 +204,12 @@
         document.addEventListener('message', handleMessage);
         window.addEventListener('message', handleMessage);
 
-        // --- boot
+        // --- boot ---
         window.addEventListener('load', function () {
           log('[AR] window load');
           sendToApp({ type: 'ready' });
 
-          // quick geolocation smoke test (separate from gps-camera internal flow)
+          // quick separate geolocation check (outside gps-camera)
           try {
             navigator.geolocation.getCurrentPosition(
               function (p) {
@@ -214,7 +225,7 @@
           } catch (e) { warn('[AR] geolocation call failed', e); }
         });
 
-        // --- main loop (poll gps-camera)
+        // --- main loop: poll gps-camera for current coords and advance ---
         setInterval(function () {
           if (!anchors.length || arrived) return;
 
@@ -250,7 +261,7 @@
           }
         }, 1000);
 
-        // global error -> forward to RN
+        // forward uncaught errors to RN with details (for same-origin scripts)
         window.onerror = function (msg, src, line, col, err) {
           sendToApp({ type: 'onerror', msg: String(msg), src, line, col, err: (err && (err.stack || String(err))) });
         };
