@@ -3,48 +3,60 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
-<title>TABI AR — Visible & Minimal</title>
+<title>TABI AR — Big Bright Arrows Everywhere</title>
 
+<!-- A-Frame -->
 <script src="https://aframe.io/releases/1.4.2/aframe.min.js" crossorigin="anonymous"></script>
 
 <script>
-  // Bind AR.js to A-Frame’s THREE (avoids degToRad/radToDeg undefined)
+  // Bind AR.js to A-Frame’s THREE and polyfill Math bits AR.js expects
   (function shimTHREE(){
     function apply(){
       try{
-        var A=window.AFRAME; if(!A||!A.THREE) return false;
-        if(!window.THREE) window.THREE=A.THREE;
-        var T=window.THREE; if(!T.Math) T.Math={};
-        var MU=T.MathUtils||A.THREE.MathUtils;
-        T.Math.degToRad=T.Math.degToRad||((d)=>d*Math.PI/180);
-        T.Math.radToDeg=T.Math.radToDeg||((r)=>r*180/Math.PI);
-        T.Math.clamp   =T.Math.clamp   ||((x,a,b)=>Math.min(Math.max(x,a),b));
-        if(!T.PlaneBufferGeometry && T.PlaneGeometry) T.PlaneBufferGeometry=T.PlaneGeometry;
+        var A = window.AFRAME; if(!A||!A.THREE) return false;
+        if(!window.THREE) window.THREE = A.THREE;
+        var T = window.THREE;
+        if(!T.Math) T.Math = {};
+        var MU = T.MathUtils || A.THREE.MathUtils;
+        T.Math.degToRad = T.Math.degToRad || ((d)=>d*Math.PI/180);
+        T.Math.radToDeg = T.Math.radToDeg || ((r)=>r*180/Math.PI);
+        T.Math.clamp    = T.Math.clamp    || ((x,a,b)=>Math.min(Math.max(x,a),b));
+        if(!T.PlaneBufferGeometry && T.PlaneGeometry) T.PlaneBufferGeometry = T.PlaneGeometry;
+        console.log('[OK] [BOOT] THREE shim applied', {hasMath:!!T.Math, hasUtils:!!MU});
         return true;
       }catch(e){ return false; }
     }
     if(!apply()){ let n=0; const id=setInterval(()=>{ if(apply()||++n>100) clearInterval(id); },50); }
   })();
 
-  // Always-on-top & no-cull helpers
+  // A-Frame helper: force objects to render on top and never cull
   if (window.AFRAME) {
     AFRAME.registerComponent('always-on-top', {
       tick(){ this.el.object3D.traverse(o=>{
-        o.renderOrder=9999; if(o.material){ o.material.depthTest=false; o.material.depthWrite=false; o.material.needsUpdate=true; }
-        o.frustumCulled=false;
+        o.renderOrder = 9999;
+        if (o.material){ o.material.depthTest=false; o.material.depthWrite=false; o.material.needsUpdate=true; }
+        o.frustumCulled = false;
       });}
     });
   }
 </script>
 
+<!-- AR.js (A-Frame build) -->
 <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.4/aframe/build/aframe-ar.js" crossorigin="anonymous"></script>
 
 <style>
   html,body{margin:0;padding:0;overflow:hidden;background:#000;}
-  /* Put canvas on top, full screen */
-  a-scene, .a-canvas, canvas{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:1000000!important;display:block!important;}
-  /* Keep DOM HUD above everything */
-  .hud{position:fixed;top:8px;left:8px;right:8px;z-index:2147483647;padding:8px 10px;background:rgba(0,0,0,.7);color:#fff;border-radius:12px;font:13px/18px system-ui;white-space:pre-line}
+  /* Keep canvas above native layers */
+  a-scene, .a-canvas, canvas{
+    position:fixed!important; inset:0!important;
+    width:100vw!important; height:100vh!important;
+    z-index:1000000!important; display:block!important;
+  }
+  .hud{
+    position:fixed; top:8px; left:8px; right:8px; z-index:2147483647;
+    padding:8px 10px; background:rgba(0,0,0,.7); color:#fff;
+    border-radius:12px; font:13px/18px system-ui; white-space:pre-line;
+  }
 </style>
 </head>
 <body>
@@ -52,17 +64,17 @@
 
 <a-scene
   vr-mode-ui="enabled:false"
-  renderer="alpha:false; antialias:true; sortObjects:true; preserveDrawingBuffer:true"
+  renderer="alpha:false; antialias:true; sortObjects:true; physicallyCorrectLights:false; preserveDrawingBuffer:true"
   embedded
   arjs="sourceType: webcam; videoTexture: true; trackingMethod: best; debugUIEnabled: false"
 >
-  <!-- Use NON-projected pair: most compatible -->
+  <!-- NON-projected GPS components: most broadly compatible -->
   <a-camera gps-camera rotation-reader camera="near:0.01; far:200000"></a-camera>
 
   <a-entity id="layer-arrows"></a-entity>
   <a-entity id="layer-arrival"></a-entity>
 
-  <!-- LOCAL, non-GPS debug objects (must be visible immediately) -->
+  <!-- local sanity markers so you always see *something* -->
   <a-plane position="0 1.5 -2" rotation="-10 0 0" width="2.6" height="1.2"
            material="shader:flat; color:#ff00ff; opacity:0.95; transparent:true"
            always-on-top></a-plane>
@@ -73,11 +85,20 @@
 
 <script>
 (function(){
+  // ======= CONFIG =======
+  const CONFIG = {
+    fixedScale: 70,          // 🔵 make ALL arrows this large (same bright-big look)
+    showAllAnchors: true,    // 🔵 render ALL anchors at once
+    maxRenderDistanceM: 500, // (safety) still skip ultra-far anchors
+    hideARVideo: true        // (optional) hide <video> element AR.js uses
+  };
+
+  // ======= Helpers =======
   const hud = document.getElementById('hud');
   const arrowsLayer = document.getElementById('layer-arrows');
   const arrivalLayer = document.getElementById('layer-arrival');
 
-  const toRad=d=>d*Math.PI/180;
+  const toRad = d => d*Math.PI/180;
   function dMeters(a,b){
     const R=6371000, dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng), la1=toRad(a.lat), la2=toRad(b.lat);
     const h=Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLng/2)**2;
@@ -86,31 +107,30 @@
   function clear(el){ while(el.firstChild) el.removeChild(el.firstChild); }
   function placeAtLatLng(node, lat, lng){ node.setAttribute('gps-entity-place',`latitude:${lat}; longitude:${lng}`); }
 
-  function scaleFor(distance){ const s = Math.max(30, Math.min(80, 24 + distance/2)); return `${s} ${s} ${s}`; }
-
-  function makeArrow(yawDeg, approx){
+  function makeArrow(yawDeg){
     const wrap=document.createElement('a-entity');
     wrap.setAttribute('rotation',`0 ${yawDeg||0} 0`);
-    wrap.setAttribute('position','0 2 0');                 // ~eye height
-    wrap.setAttribute('scale',scaleFor(approx||30));
+    wrap.setAttribute('position','0 2 0'); // eye-ish height
+    wrap.setAttribute('scale', `${CONFIG.fixedScale} ${CONFIG.fixedScale} ${CONFIG.fixedScale}`);
     wrap.setAttribute('always-on-top','');
 
-    // BRIGHT, light-independent, FLAT shader (no emissive, no lights required)
+    // BIG, BRIGHT, FLAT (no lights needed)
     const shaft=document.createElement('a-cylinder');
-    shaft.setAttribute('height','6'); shaft.setAttribute('radius','0.4'); shaft.setAttribute('position','0 3 0');
+    shaft.setAttribute('height','6'); shaft.setAttribute('radius','0.7'); shaft.setAttribute('position','0 3 0');
     shaft.setAttribute('material','shader:flat; color:#00e0ff; opacity:1; transparent:true');
 
     const head=document.createElement('a-cone');
-    head.setAttribute('height','2.8'); head.setAttribute('radius-bottom','1.2'); head.setAttribute('radius-top','0.01'); head.setAttribute('position','0 5.6 0');
+    head.setAttribute('height','3.2'); head.setAttribute('radius-bottom','1.8'); head.setAttribute('radius-top','0.01'); head.setAttribute('position','0 6.2 0');
     head.setAttribute('material','shader:flat; color:#00e0ff; opacity:1; transparent:true');
 
     wrap.appendChild(shaft); wrap.appendChild(head);
     return wrap;
   }
 
-  // State
-  let anchors=[]; let activeIndex=0; let arrived=false; let here=null;
+  // ======= State =======
+  let anchors=[]; let activeIndex=0; let arrived=false; let here=null; let originReady=false;
 
+  // ======= HUD =======
   function updateHUD(dist){
     if (!anchors.length){ hud.textContent='Waiting for anchors…'; return; }
     if (arrived){ hud.textContent='Arrived — look around for the destination.'; return; }
@@ -118,28 +138,38 @@
     const label=`${activeIndex+1}/${anchors.length}`;
     const dt=(typeof dist==='number')?`${Math.round(Math.max(0,dist))} m`:'…';
     hud.textContent=`Next: ${label} — ${dt}${next?`\n(${next.lat.toFixed(5)}, ${next.lng.toFixed(5)})`:''}`;
+    console.log('[INFO] HUD', {activeIndex, dist:dt});
   }
 
+  // ======= Render =======
   function renderArrows(){
+    console.log('[INFO] RENDER begin', {activeIndex, total:anchors.length, originReady});
     clear(arrivalLayer); clear(arrowsLayer);
     if(!anchors.length || arrived) return;
-    const toShow=[activeIndex, activeIndex+1].filter(i=>i<anchors.length);
-    let approx = here && anchors[activeIndex] ? dMeters(here, anchors[activeIndex]) : 30;
 
-    toShow.forEach((idx,i)=>{
+    let list = [];
+    if (CONFIG.showAllAnchors) {
+      list = anchors.map((_,i)=>i);
+    } else {
+      // show window around the active index (fallback)
+      const COUNT=8;
+      for (let i=activeIndex; i<Math.min(anchors.length, activeIndex+COUNT); i++) list.push(i);
+    }
+
+    // optionally drop ultra-far anchors to keep the scene light
+    if (here) {
+      list = list.filter(i => dMeters(here, anchors[i]) <= CONFIG.maxRenderDistanceM);
+    }
+
+    console.log('[INFO] RENDER will show', {count:list.length, indices:list});
+    list.forEach(idx=>{
       const a=anchors[idx];
       const n=document.createElement('a-entity');
       placeAtLatLng(n, a.lat, a.lng);
-      const lbl=document.createElement('a-entity');
-      lbl.setAttribute('text',`value:${i===0?'NEXT':'→'}; color:${i===0?'#ff4444':'#ffaa00'}; align:center; width:10;`);
-      lbl.setAttribute('position','0 3 0');
-      lbl.setAttribute('look-at','[gps-camera]');
-      lbl.setAttribute('always-on-top','');
-      n.appendChild(lbl);
-
-      n.appendChild(makeArrow(a.yaw, approx||30));
+      n.appendChild(makeArrow(a.yaw));
       arrowsLayer.appendChild(n);
     });
+    console.log('[INFO] RENDER end', {children:arrowsLayer.children.length});
   }
 
   function showArrival(){
@@ -148,26 +178,34 @@
     const w=document.createElement('a-entity'); placeAtLatLng(w,last.lat,last.lng);
     const r=document.createElement('a-ring'); r.setAttribute('radius-inner','2'); r.setAttribute('radius-outer','2.6'); r.setAttribute('rotation','-90 0 0'); r.setAttribute('position','0 0.2 0');
     r.setAttribute('material','shader:flat; color:#10b981; opacity:1; transparent:true'); r.setAttribute('always-on-top','');
-    const t=document.createElement('a-entity'); t.setAttribute('text','value:ARRIVED; color:#10b981; align:center; width:10;'); t.setAttribute('position','0 2 0'); t.setAttribute('look-at','[gps-camera]'); t.setAttribute('always-on-top','');
-    w.appendChild(r); w.appendChild(t); arrivalLayer.appendChild(w);
+    w.appendChild(r); arrivalLayer.appendChild(w);
     hud.textContent='Arrived — look around for the destination.';
   }
 
-  // RN bridge
+  // ======= RN bridge =======
   function setAnchors(data){
     anchors = Array.isArray(data)? data : [];
     activeIndex=0; arrived=false;
+    console.log('[INFO] ANCHORS received', {count:anchors.length, first:anchors[0], last:anchors[anchors.length-1]});
     renderArrows(); updateHUD(undefined);
   }
   function onMsg(ev){ try{ const p=JSON.parse(ev.data); if(p?.type==='anchors') setAnchors(p.data); }catch{} }
   document.addEventListener('message', onMsg); window.addEventListener('message', onMsg);
 
-  // GPS
+  // ======= GPS & origin =======
+  const camEl = document.querySelector('[gps-camera]');
+  camEl?.addEventListener('gps-camera-origin-coord', e => { originReady=true; console.log('[INFO] origin ready', e.detail); });
+
   function startGPS(){
     try{
-      navigator.geolocation.getCurrentPosition(()=>{},()=>{}, {enableHighAccuracy:true, timeout:10000, maximumAge:1000});
+      navigator.geolocation.getCurrentPosition(
+        pos=>{ here={lat:pos.coords.latitude, lng:pos.coords.longitude}; console.log('[INFO] getCurrentPosition', here); },
+        err=>{ console.warn('[WARN] getCurrentPosition failed', err); },
+        {enableHighAccuracy:true, timeout:10000, maximumAge:1000}
+      );
       navigator.geolocation.watchPosition(pos=>{
         here={lat:pos.coords.latitude, lng:pos.coords.longitude};
+        console.log('[INFO] watchPosition', {lat:here.lat, lng:here.lng, acc:pos.coords.accuracy});
         if(anchors.length && !arrived){
           const target=anchors[activeIndex];
           const dist=dMeters(here,target);
@@ -178,11 +216,32 @@
             showArrival();
           }
         }
-      }, ()=>{}, {enableHighAccuracy:true, timeout:10000, maximumAge:1000, distanceFilter:1});
-    }catch{}
+      }, err=>console.warn('[WARN] watchPosition failed', err),
+      {enableHighAccuracy:true, timeout:10000, maximumAge:1000, distanceFilter:1});
+    }catch(e){ console.warn('[WARN] GPS start failed', e); }
   }
 
+  // ======= Layer enforcement (keeps canvas on top, hides video if desired) =======
+  function enforceLayers(){
+    try{
+      const canv = document.querySelector('canvas.a-canvas');
+      const videos = document.querySelectorAll('video');
+      console.log('[INFO] Layer check', {hasCanvas:!!canv, videoCount:videos.length});
+      if (canv){
+        const st = getComputedStyle(canv);
+        console.log('[INFO] Canvas style', {w:st.width,h:st.height,display:st.display,position:st.position,z:st.zIndex});
+        canv.style.position='fixed'; canv.style.inset='0'; canv.style.zIndex='1000000'; canv.style.display='block';
+      }
+      if (CONFIG.hideARVideo && videos.length){
+        videos.forEach((v,i)=>{ v.style.visibility='hidden'; v.style.display='none'; console.log('[INFO] Hid AR.js video', {i, id:v.id}); });
+      }
+    }catch{}
+  }
+  setInterval(enforceLayers, 1500);
+
+  // ======= Boot =======
   window.addEventListener('load', ()=>{
+    console.log('[INFO] window load');
     startGPS();
   });
 })();
